@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Kutsakai TV</string>
+    <string name="title_activity_main">Kutsakai TV</string>
+    <string name="package_name">com.kutsakai.tv</string>
+    <string name="custom_url_scheme">com.kutsakai.tv</string>
+</resources>

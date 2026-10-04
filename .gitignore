@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+dist/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+.env
+.env.local
+.env.production
+apps/web/android/build/
+apps/web/android/app/build/
+apps/web/android/.gradle/
+.DS_Store
+Thumbs.db
+.opencode/

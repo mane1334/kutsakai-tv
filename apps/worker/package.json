@@ -1,0 +1,20 @@
+{
+  "name": "worker",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "sync": "tsx src/sync.ts",
+    "monitor": "tsx src/monitor.ts",
+    "monitor:lang": "tsx src/monitor-lang.ts",
+    "verify": "tsx src/verify.ts",
+    "epg": "tsx src/epg.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

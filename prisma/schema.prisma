@@ -1,0 +1,176 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String           @id @default(uuid())
+  name         String
+  email        String           @unique
+  passwordHash String
+  country      String?
+  language     String           @default("pt")
+  isAdmin      Boolean          @default(false)
+  createdAt    DateTime         @default(now())
+  preferences  UserPreferences?
+  favorites    Favorite[]
+  history      WatchHistory[]
+  events       UserChannelEvent[]
+  recommendations Recommendation[]
+  subscriptions Subscription[]
+}
+
+model UserPreferences {
+  userId      String  @id
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  languages   String[] @default(["pt"])
+  countries   String[] @default([])
+  regions     String[] @default([])
+  categories  String[] @default([])
+  qualityMode String  @default("auto")
+  dataSaver   Boolean @default(false)
+}
+
+model Channel {
+  id               String   @id @default(uuid())
+  name             String
+  logo             String?
+  streamUrl        String   @unique
+  country          String?
+  region           String?
+  languages        String[] @default([])
+  categories       String[] @default([])
+  resolution       String?
+  bitrate          Int?
+  codec            String?
+  status           String   @default("unknown")
+  accessLevel      String   @default("FREE")
+  reliabilityScore Float    @default(0)
+  lastChecked      DateTime?
+  updatedAt        DateTime @updatedAt
+  favorites        Favorite[]
+  history          WatchHistory[]
+  events           UserChannelEvent[]
+  checks           StreamCheck[]
+  recommendations  Recommendation[]
+}
+
+model WatchHistory {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channelId      String
+  channel        Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  startedAt      DateTime @default(now())
+  endedAt        DateTime?
+  durationSec    Int      @default(0)
+  dataConsumedMB Float    @default(0)
+}
+
+model Favorite {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channelId String
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@id([userId, channelId])
+}
+
+model UserChannelEvent {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channelId String
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  type      String
+  weight    Int
+  createdAt DateTime @default(now())
+}
+
+model Recommendation {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channelId   String
+  channel     Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  score       Float
+  reason      String
+  generatedAt DateTime @default(now())
+}
+
+model Subscription {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan      String   @default("free")
+  planId    String?
+  status    String   @default("active")
+  autoRenew Boolean  @default(false)
+  paymentProvider String?
+  startedAt DateTime @default(now())
+  expiresAt DateTime?
+}
+
+model Plan {
+  id           String   @id @default(uuid())
+  code         String   @unique
+  name         String
+  price        Float    @default(0)
+  currency     String   @default("MZN")
+  durationDays Int      @default(0)
+  maxDevices   Int      @default(1)
+  maxQuality   String   @default("720p")
+  features     String   @default("[]")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+model PlanChannel {
+  planId    String
+  channelId String
+  addedAt   DateTime @default(now())
+  @@id([planId, channelId])
+}
+
+model Payment {
+  id            String   @id @default(uuid())
+  userId        String
+  subscriptionId String?
+  planId        String?
+  provider      String
+  providerTransactionId String?
+  amount        Float
+  currency      String   @default("MZN")
+  status        String   @default("PENDING")
+  metadata      String   @default("{}")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  completedAt   DateTime?
+}
+
+model Payment {
+  id            String   @id @default(uuid())
+  userId        String
+  amount        Float
+  currency      String   @default("MZN")
+  provider      String
+  transactionId String?  @unique
+  status        String   @default("pending")
+  createdAt     DateTime @default(now())
+}
+
+model StreamCheck {
+  id         String   @id @default(uuid())
+  channelId  String
+  channel    Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  checkedAt  DateTime @default(now())
+  status     String
+  latencyMs  Int?
+  resolution String?
+  bitrate    Int?
+  error      String?
+}

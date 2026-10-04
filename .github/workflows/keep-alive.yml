@@ -1,0 +1,22 @@
+name: keep-alive
+
+# Mantém o Render Free acordado (ping de 10 em 10 min ao /health).
+# Sem isto, após ~15 min sem tráfego a API dorme e o 1º request demora ~50s.
+# Grátis, usa só GitHub Actions minutes do free tier.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API
+        run: |
+          URL="${{ secrets.API_URL }}"
+          if [ -z "$URL" ]; then
+            echo "Define o secret API_URL (ex. https://api.kutsakai.dpdns.org/health)"
+            exit 0
+          fi
+          curl -fsS --max-time 60 "$URL" || echo "ping falhou (serviço a acordar?)"

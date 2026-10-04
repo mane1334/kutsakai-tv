@@ -1,0 +1,12 @@
+{
+  "name": "iptv-platform",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev:api": "npm --workspace apps/api run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "sync": "npm --workspace apps/worker run sync",
+    "monitor": "npm --workspace apps/worker run monitor"
+  }
+}
