@@ -1,0 +1,32 @@
+name: backup-daily
+
+# Backup automático diário da DB (users, subs, pagamentos...) para Artifacts.
+# No pior caso (restart do Render Free) perdes < 24h. Corre mesmo com o PC desligado.
+# Secrets necessários (repo → Settings → Secrets → Actions):
+#   BACKUP_API_BASE  = https://api.kutsakai.dpdns.org/v1
+#   ADMIN_EMAIL      = email da conta admin
+#   ADMIN_PASSWORD   = password dessa conta
+on:
+  schedule:
+    - cron: "0 1 * * *" # 03:00 em Maputo (UTC+2)
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login + backup
+        run: |
+          set -e
+          TOKEN=$(curl -fsS -X POST "${{ secrets.BACKUP_API_BASE }}/auth/login" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"${{ secrets.ADMIN_EMAIL }}\",\"password\":\"${{ secrets.ADMIN_PASSWORD }}\"}" \
+            | jq -r .accessToken)
+          curl -fsS "${{ secrets.BACKUP_API_BASE }}/admin/backup" \
+            -H "Authorization: Bearer $TOKEN" -o backup-$(date +%F).json
+          ls -la backup-*.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kutsakai-backup
+          path: backup-*.json
+          retention-days: 30

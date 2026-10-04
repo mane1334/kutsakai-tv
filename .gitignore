@@ -9,6 +9,7 @@ dist/
 .env
 .env.local
 .env.production
+backups/
 apps/web/android/build/
 apps/web/android/app/build/
 apps/web/android/.gradle/
