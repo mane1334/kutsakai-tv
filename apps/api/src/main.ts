@@ -55,16 +55,39 @@ const j = (s: string) => { try { return JSON.parse(s); } catch { return []; } };
 const isSecureStream = (url: unknown) => typeof url === 'string' && url.trim().toLowerCase().startsWith('https://');
 const isHttpStream = (url: unknown) => typeof url === 'string' && /^https?:\/\//i.test(url.trim());
 
-function relayUrl(req: any, channelId: string, sourceUrl: string): string {
+// Token curto, preso a UM canal: o hls.js e o <video> não enviam o header
+// Authorization nos pedidos de playlist/segmentos, por isso o relay PREMIUM
+// aceita este token na query (?st=) em vez do Bearer.
+const signStreamToken = (channelId: string) => jwt.sign({ k: 'stream', cid: channelId }, JWT_SECRET, { expiresIn: '6h' });
+function validStreamToken(t: unknown, channelId: string): boolean {
+  try { const p: any = jwt.verify(String(t || ''), JWT_SECRET); return p.k === 'stream' && p.cid === channelId; }
+  catch { return false; }
+}
+function viewerId(req: any): string | null {
+  if (req._vid !== undefined) return req._vid;
+  let id: string | null = null;
+  const h = req.headers.authorization;
+  if (h?.startsWith('Bearer ')) { try { id = (jwt.verify(h.slice(7), JWT_SECRET) as any).sub; } catch { /* expirado = anónimo */ } }
+  req._vid = id;
+  return id;
+}
+
+function relayUrl(req: any, channelId: string, sourceUrl: string, st?: string): string {
   const base = `${req.protocol}://${req.get('host')}`;
-  return `${base}/v1/channels/${encodeURIComponent(channelId)}/stream?url=${encodeURIComponent(sourceUrl)}`;
+  return `${base}/v1/channels/${encodeURIComponent(channelId)}/stream?url=${encodeURIComponent(sourceUrl)}${st ? `&st=${encodeURIComponent(st)}` : ''}`;
 }
 
 function publicChannel(req: any, c: any) {
   const stream = String(c.stream_url || '').trim();
+  let st: string | undefined;
+  if ((c.access_level || 'FREE').toUpperCase() === 'PREMIUM') {
+    const uid = viewerId(req);
+    const adm = uid ? (db.prepare('SELECT is_admin FROM users WHERE id=?').get(uid) as any)?.is_admin : 0;
+    if (uid && (adm || authorizeChannel(uid, c).authorized)) st = signStreamToken(c.id);
+  }
   return {
     ...c,
-    stream_url: isHttpStream(stream) && !isSecureStream(stream) ? relayUrl(req, c.id, stream) : stream,
+    stream_url: isHttpStream(stream) && !isSecureStream(stream) ? relayUrl(req, c.id, stream, st) : stream,
     languages: j(c.languages),
     categories: j(c.categories),
   };
@@ -213,8 +236,10 @@ app.post('/v1/onboarding', auth, (req: any, res) => {
 });
 
 // --- channels ---
-// Visibilidade: sem sub paga só lista FREE. Com sub paga lista tudo
-// (o detalhe por canal continua no gate /authorization).
+// Visibilidade: lista SEMPRE tudo (teaser). Sem sub paga o PREMIUM vem sem
+// stream_url e com locked:true — o cadeado/upsell é no frontend + gate.
+// Esconder o PREMIUM da lista fazia o site parecer vazio/partido quando
+// todos os canais estavam em PREMIUM.
 function paidViewer(req: any): string | null {
   const h = req.headers.authorization;
   if (!h?.startsWith('Bearer ')) return null;
@@ -230,7 +255,6 @@ app.get('/v1/channels', (req, res) => {
   const { q, country, language, category, region, status, page = '1', limit = '48' } = req.query as any;
   const viewer = paidViewer(req);
   let rows: any[] = db.prepare('SELECT * FROM channels ORDER BY reliability_score DESC, name LIMIT 5000').all();
-  if (!viewer) rows = rows.filter((c) => (c.access_level || 'FREE').toUpperCase() === 'FREE');
   if (status !== 'all') rows = rows.filter((c) => c.status !== 'offline');
   if (q) rows = rows.filter((c) => c.name.toLowerCase().includes(String(q).toLowerCase()));
   if (country) rows = rows.filter((c) => (c.country || '').toLowerCase() === String(country).toLowerCase());
@@ -239,7 +263,17 @@ app.get('/v1/channels', (req, res) => {
   if (category) rows = rows.filter((c) => j(c.categories).map((x: string) => x.toLowerCase()).includes(String(category).toLowerCase()));
   if (status && status !== 'all') rows = rows.filter((c) => c.status === status);
   const p = Math.max(1, parseInt(String(page))), l = Math.min(100, parseInt(String(limit)));
-  const map = (c: any) => publicChannel(req, c);
+  const map = (c: any) => {
+    const pub: any = publicChannel(req, c);
+    // teaser: sem sub paga o PREMIUM lista mas sem stream (cadeado + upsell no
+    // frontend; o playback continua gated em /authorization e no relay /stream).
+    // Sem isto, ou o site fica vazio (se filtrar) ou há bypass (stream direto).
+    if (!viewer && (c.access_level || 'FREE').toUpperCase() === 'PREMIUM') {
+      pub.stream_url = null;
+      pub.locked = true;
+    }
+    return pub;
+  };
   res.json({ total: rows.length, page: p, data: rows.slice((p - 1) * l, p * l).map(map) });
 });
 
@@ -248,8 +282,11 @@ app.get('/v1/channels', (req, res) => {
 app.get('/v1/channels/:id/stream', async (req: any, res) => {
   const c: any = db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.id);
   if (!c || !isHttpStream(c.stream_url)) return res.status(404).json({ statusCode: 404, message: 'stream not found' });
-  if ((c.access_level || 'FREE').toUpperCase() === 'PREMIUM' && !paidViewer(req))
+  const premium = (c.access_level || 'FREE').toUpperCase() === 'PREMIUM';
+  const hasToken = validStreamToken(req.query.st, c.id);
+  if (premium && !hasToken && !paidViewer(req))
     return res.status(403).json({ statusCode: 403, message: 'upgrade_required' });
+  const st = premium ? (hasToken ? String(req.query.st) : signStreamToken(c.id)) : undefined;
   const requested = String(req.query.url || '');
   let source: URL, original: URL;
   try {
@@ -278,7 +315,7 @@ app.get('/v1/channels/:id/stream', async (req: any, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (looksPlaylist) {
       let text = await upstream.text();
-      const rewrite = (raw: string) => relayUrl(req, c.id, new URL(raw, source).toString());
+      const rewrite = (raw: string) => relayUrl(req, c.id, new URL(raw, source).toString(), st);
       text = text.replace(/^(?!#)(\s*[^\s]+\s*)$/gm, (line) => rewrite(line.trim()));
       text = text.replace(/URI="([^"]+)"/g, (_m, raw) => `URI="${rewrite(raw)}"`);
       res.type('application/vnd.apple.mpegurl').send(text);
@@ -312,13 +349,19 @@ app.get('/v1/channels/:id/related', (req, res) => {
   const cats = j(c.categories), langs = j(c.languages);
   const viewer = paidViewer(req);
   let rows: any[] = db.prepare('SELECT * FROM channels WHERE id != ? AND status != ? LIMIT 500').all(c.id, 'offline');
-  if (!viewer) rows = rows.filter((r) => (r.access_level || 'FREE').toUpperCase() === 'FREE');
   const scored = rows.map((r) => {
     const rc = j(r.categories), rl = j(r.languages);
     const overlap = rc.filter((x: string) => cats.includes(x)).length + rl.filter((x: string) => langs.includes(x)).length;
     return { r, overlap };
   }).filter((x) => x.overlap > 0).sort((a, b) => b.overlap - a.overlap || b.r.reliability_score - a.r.reliability_score).slice(0, 12);
-  res.json(scored.map((x) => publicChannel(req, x.r)));
+  res.json(scored.map((x) => {
+    const pub: any = publicChannel(req, x.r);
+    if (!viewer && (x.r.access_level || 'FREE').toUpperCase() === 'PREMIUM') {
+      pub.stream_url = null;
+      pub.locked = true;
+    }
+    return pub;
+  }));
 });
 
 // --- favorites / history / events ---
@@ -548,7 +591,8 @@ app.get('/v1/channels/:id/authorization', (req, res) => {
   let userId: string | null = null;
   const h = req.headers.authorization;
   if (h?.startsWith('Bearer ')) {
-    try { userId = (jwt.verify(h.slice(7), JWT_SECRET) as any).sub; } catch { /* token inválido = anónimo */ }
+    try { userId = (jwt.verify(h.slice(7), JWT_SECRET) as any).sub; }
+    catch { return res.status(401).json({ statusCode: 401, message: 'token expired' }); } // não tratar como anónimo: o cliente renova o token
   }
   const c: any = db.prepare('SELECT id,access_level FROM channels WHERE id=?').get(req.params.id);
   if (!c) return res.status(404).json({ statusCode: 404, message: 'not found' });
@@ -701,11 +745,20 @@ app.post('/v1/admin/channels/:id/make-free', auth, (req: any, res) => {
 });
 // bulk: mete TODOS os canais em FREE ou PREMIUM de uma vez
 // (depois escolhes à mão os que ficam FREE, um a um na tabela)
+// Sincroniza plan_channels para os contadores do /plans não mentirem.
 app.post('/v1/admin/channels/access-bulk', auth, (req: any, res) => {
   if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
   const level = String(req.body?.accessLevel || '').toUpperCase();
   if (!['FREE', 'PREMIUM'].includes(level)) return res.status(400).json({ statusCode: 400, message: 'use FREE or PREMIUM' });
   const r = db.prepare(`UPDATE channels SET access_level=?`).run(level);
+  if (level === 'PREMIUM') {
+    const paid: any[] = db.prepare(`SELECT id FROM plans WHERE duration_days > 0`).all();
+    const prem: any[] = db.prepare(`SELECT id FROM channels WHERE access_level='PREMIUM'`).all();
+    const link = db.prepare('INSERT OR IGNORE INTO plan_channels (plan_id,channel_id) VALUES (?,?)');
+    for (const p of paid) for (const c of prem) link.run(p.id, c.id);
+  } else {
+    db.prepare('DELETE FROM plan_channels').run();
+  }
   res.json({ ok: true, accessLevel: level, updated: r.changes });
 });
 

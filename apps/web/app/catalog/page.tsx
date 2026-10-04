@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { API, apiGet, authFetch } from '../../lib/api';
+import { API, apiGet, authFetch, tryRefresh, tokenExpiring } from '../../lib/api';
 import LogoutButton from '../../components/LogoutButton';
 
 const LANG_OPTS = [['', 'todas'], ['por', 'PT'], ['eng', 'EN'], ['spa', 'ES'], ['fra', 'FR']];
@@ -30,10 +30,21 @@ export default function Catalog() {
   const LIMIT = 60;
   const [paid, setPaid] = useState(false);
   const [lockedCount, setLockedCount] = useState(0);
-
-  useEffect(() => { setToken(localStorage.getItem('access') || ''); }, []);
+  const [tokenReady, setTokenReady] = useState(false);
 
   useEffect(() => {
+    // token de 15 min: renova antes da lista, senão conta paga parece anónima
+    // e os PREMIUM vêm com cadeado mesmo tendo subscrição.
+    (async () => {
+      let t = localStorage.getItem('access') || '';
+      if (t && tokenExpiring(t)) t = (await tryRefresh()) || '';
+      setToken(t);
+      setTokenReady(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!tokenReady) return;
     const t = setTimeout(() => {
       const p = new URLSearchParams({ limit: String(LIMIT), page: String(page) });
       if (q) p.set('q', q);
@@ -50,7 +61,7 @@ export default function Catalog() {
       });
     }, 300);
     return () => clearTimeout(t);
-  }, [q, lang, cat, country, region, onlineOnly, page, token]);
+  }, [q, lang, cat, country, region, onlineOnly, page, token, tokenReady]);
 
   useEffect(() => {
     fetch(`${API}/plans`).then(r => r.json()).then(d => {
@@ -130,7 +141,7 @@ export default function Catalog() {
         </h1>
         {!paid && lockedCount > 0 && (
           <Link href="/plans" style={{ display: 'block', marginTop: 16, padding: '14px 18px', borderRadius: 14, border: '1px solid var(--border-accent)', background: 'var(--accent-subtle)', textDecoration: 'none', color: 'var(--text-primary)', fontSize: 14 }}>
-            <b style={{ color: 'var(--accent)' }}>{lockedCount} canais premium</b> escondidos — desbloqueia com Daily, Weekly ou Monthly →
+            <b style={{ color: 'var(--accent)' }}>{lockedCount} canais premium</b> com cadeado — desbloqueia com Daily, Weekly ou Monthly →
           </Link>
         )}
 

@@ -9,7 +9,7 @@ export const setToken = (t: string) => {
   else localStorage.removeItem('access');
 };
 
-async function tryRefresh(): Promise<string | null> {
+export async function tryRefresh(): Promise<string | null> {
   try {
     const r = await fetch(`${API}/auth/refresh`, { method: 'POST', credentials: 'include' }).then((x) => x.json());
     if (r?.accessToken) {
@@ -19,6 +19,14 @@ async function tryRefresh(): Promise<string | null> {
     }
   } catch { /* sem refresh */ }
   return null;
+}
+
+/** true se o JWT já expirou (ou expira dentro de skewSec). */
+export function tokenExpiring(t: string, skewSec = 60): boolean {
+  try {
+    const p = JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return !p.exp || p.exp * 1000 < Date.now() + skewSec * 1000;
+  } catch { return true; }
 }
 
 /** fetch com Bearer + refresh automático 1x em 401. Devolve Response. */

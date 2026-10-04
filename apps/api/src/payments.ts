@@ -151,19 +151,22 @@ export function hasActiveSubscription(userId: string): { active: boolean; subscr
 }
 
 // Autorização de conteúdo: FREE liberta; PREMIUM exige sub paga ativa.
-// Se o canal estiver atribuído a planos (plan_channels), a sub tem de ser
-// de um desses planos; senão, qualquer sub paga serve.
+// Qualquer sub paga (daily/weekly/monthly) abre QUALQUER premium —
+// plan_channels é só organizacional/contadores, nunca gate (evita o
+// "plan_required" fantasma quando o bulk muda tudo para PREMIUM).
+// Admin passa sempre (preview sem precisar de comprar).
 export function authorizeChannel(userId: string | null, channel: any): { authorized: boolean; reason: string } {
   const level = (channel.access_level || 'FREE').toUpperCase();
   if (level === 'FREE') return { authorized: true, reason: 'free' };
   if (!userId) return { authorized: false, reason: 'login_required' };
+  try {
+    if ((db.prepare('SELECT is_admin FROM users WHERE id=?').get(userId) as any)?.is_admin)
+      return { authorized: true, reason: 'admin' };
+  } catch { /* segue */ }
   const subs: any[] = db.prepare(`SELECT s.*, p.duration_days FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.user_id=? AND s.status='ACTIVE' AND (s.expires_at IS NULL OR s.expires_at > datetime('now'))`).all(userId);
   const paid = subs.filter((s) => (s.duration_days || 0) > 0);
   if (!paid.length) return { authorized: false, reason: 'upgrade_required' };
-  const assigned: any[] = db.prepare('SELECT plan_id FROM plan_channels WHERE channel_id=?').all(channel.id);
-  if (!assigned.length) return { authorized: true, reason: 'subscription' };
-  const ok = paid.some((s) => assigned.some((a) => a.plan_id === s.plan_id));
-  return ok ? { authorized: true, reason: 'subscription' } : { authorized: false, reason: 'plan_required' };
+  return { authorized: true, reason: 'subscription' };
 }
 
 // Ativação — SÓ chamada pelo backend após confirmação do gateway/webhook/poll.

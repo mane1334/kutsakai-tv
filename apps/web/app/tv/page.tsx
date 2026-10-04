@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Hls from 'hls.js';
-import { API, apiGet, authFetch, logout } from '../../lib/api';
+import { API, apiGet, authFetch, logout, tryRefresh, tokenExpiring } from '../../lib/api';
 
 const I = {
   up: <svg viewBox="0 0 24 24"><path d="M6 14l6-6 6 6" /></svg>,
@@ -73,10 +73,24 @@ export default function TV() {
 
   const current = list[idx] || null;
   const auth = () => (token ? { Authorization: `Bearer ${token}` } : {});
-
-  useEffect(() => { setToken(localStorage.getItem('access') || ''); }, []);
+  const [tokenReady, setTokenReady] = useState(false);
 
   useEffect(() => {
+    // o access token dura 15 min: renova ANTES de pedir lista/gate, senão o servidor
+    // trata a conta paga como anónima e bloqueia os canais PREMIUM.
+    const onTok = (e: any) => setToken(e?.detail || '');
+    window.addEventListener('kutsakai:token', onTok);
+    (async () => {
+      let t = localStorage.getItem('access') || '';
+      if (t && tokenExpiring(t)) t = (await tryRefresh()) || '';
+      setToken(t);
+      setTokenReady(true);
+    })();
+    return () => window.removeEventListener('kutsakai:token', onTok);
+  }, []);
+
+  useEffect(() => {
+    if (!tokenReady) return; // evita lista anónima (só FREE) a sobrepor a lista autenticada
     const h: any = token ? { Authorization: `Bearer ${token}` } : {};
     const qp = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
     const wantedId = qp?.get('channel') || null;
@@ -105,7 +119,7 @@ export default function TV() {
       const ps = (Array.isArray(d) ? d : []).filter((p: any) => p.duration_days > 0);
       if (ps.length) setFromPrice(Math.min(...ps.map((p: any) => p.price)));
     }).catch(() => {});
-  }, [token]);
+  }, [token, tokenReady]);
 
   // popup de upgrade a cada 5 min para quem não tem pacote pago
   useEffect(() => {
@@ -129,7 +143,7 @@ export default function TV() {
     const isPremium = (current.access_level || 'FREE').toUpperCase() === 'PREMIUM';
     if (!isPremium) { flashInfo(); }
     else {
-      fetch(`${API}/channels/${current.id}/authorization`, { headers: auth() as any })
+      authFetch(`${API}/channels/${current.id}/authorization`)
         .then(r => r.json()).then(a => {
           if (a.authorized) flashInfo();
           else { setGate(a.reason); setUpsell({ reason: a.reason }); }
