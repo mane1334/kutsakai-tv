@@ -145,3 +145,22 @@ falharem — normal no free.
   payments manuais M-Pesa/e-Mola) fica igual.
 - API sempre-on + disco: Fly.io (`fly volumes create data --size 3`) com
   `SQLITE_PATH=/data/data.db`, ou Oracle Always Free com este mesmo Dockerfile.
+
+
+## Persistência da base de dados (Render Free)
+
+O Render Free apaga `/tmp` em cada restart/redeploy. A API guarda um snapshot da SQLite
+num bucket S3-compatível e restaura-o no arranque.
+
+1. Cloudflare → R2 → criar bucket (ex. `kutsakai-tv-db`) → Manage R2 API Tokens →
+   token com *Object Read & Write* nesse bucket.
+2. No Render (serviço `kutsakai-api` → Environment) definir:
+   `S3_ENDPOINT` (`https://<ACCOUNT_ID>.r2.cloudflarestorage.com`), `S3_BUCKET`,
+   `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`. Opcional: `BACKUP_INTERVAL_SEC` (def. 60).
+3. Redeploy. Nos logs deve aparecer `[persist] ainda não há backup — DB nova` na 1ª vez
+   e `[persist] DB restaurada do storage` nas seguintes.
+
+Notas: o backup corre a cada N segundos (só envia se mudou) e no SIGTERM; no pior caso
+perdes os últimos N segundos. Se o restore falhar por erro de rede/credenciais, os
+backups ficam desligados nessa execução para não sobrescrever o snapshot bom.
+Guarda também cópia diária em `kutsakai-tv/daily/AAAA-MM-DD.db.gz` (sem limpeza automática).

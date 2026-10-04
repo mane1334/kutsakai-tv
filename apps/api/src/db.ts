@@ -1,12 +1,13 @@
 // apps/api/src/db.ts — SQLite local (dev / VM com disco) + aviso prod.
 // Em Render Free o disco é efémero: a data.db apaga a cada restart/redeploy.
-// Fase 2 (quando quiseres persistência real free): migrar para Turso/Neon
-// (isso obriga reescrever os db.prepare para async — deixo para depois).
+// Persistência: ver persist.ts (snapshot em R2/S3 — restore no arranque, backup periódico).
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import { dbPath, restoreSnapshot } from './persist.js';
 
-const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
+// restaura o último snapshot (S3/R2) ANTES de abrir a DB — top-level await
+await restoreSnapshot();
 
 // garante que a pasta existe (ex. /data no Docker/Fly)
 try {
