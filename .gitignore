@@ -15,3 +15,5 @@ apps/web/android/.gradle/
 .DS_Store
 Thumbs.db
 .opencode/
+
+*.apk
