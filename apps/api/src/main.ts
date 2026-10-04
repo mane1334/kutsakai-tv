@@ -20,7 +20,17 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cookieParser());
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',').map((s) => s.trim()).filter(Boolean);
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+// sufixos extra (ex. previews do Pages: 29ec2579.kutsakai-tv.pages.dev) — só os nossos
+const allowedSuffixes = (process.env.ALLOWED_ORIGIN_SUFFIXES || '.kutsakai-tv.pages.dev').split(',').map((s) => s.trim()).filter(Boolean);
+app.use(cors({
+  origin: (origin: string | undefined, cb: (err: Error | null, ok?: boolean) => void) => {
+    if (!origin) return cb(null, true); // curl / server-side / same-origin sem Origin
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (allowedSuffixes.some((s) => origin.endsWith(s))) return cb(null, true);
+    cb(null, false);
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: '50mb' }));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';

@@ -19,6 +19,9 @@ services:
       - key: ALLOWED_ORIGINS
         # trocar pelos teus sub-domínios reais depois do Pages no ar
         value: https://tv.kutsakai.dpdns.org,https://kutsakai-tv.pages.dev
+      - key: ALLOWED_ORIGIN_SUFFIXES
+        # cobre os previews do Pages (abc123.kutsakai-tv.pages.dev)
+        value: .kutsakai-tv.pages.dev
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_REFRESH_SECRET
