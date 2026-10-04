@@ -2,17 +2,22 @@ FROM node:24-slim
 
 WORKDIR /app
 
-# deps primeiro (cache)
+# manifests primeiro (cache) — inclui TODOS os workspaces ou o npm ci falha
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
 COPY apps/worker/package.json apps/worker/package.json
-COPY packages ./packages
-RUN npm ci --omit=dev 2>/dev/null || npm install --omit=dev
+COPY packages/m3u-parser/package.json packages/m3u-parser/package.json
+COPY packages/recommendation-engine/package.json packages/recommendation-engine/package.json
+COPY packages/stream-monitor/package.json packages/stream-monitor/package.json
 
-# código da API + deps dev mínimas para correr tsx
+RUN npm ci --omit=dev || npm install --omit=dev
+
+# código necessário para a API correr (main.ts importa db, payments e 2 packages)
 COPY apps/api ./apps/api
-RUN npm --workspace apps/api install --omit=dev 2>/dev/null || true
-RUN npm i -g tsx 2>/dev/null || npm install -g tsx
+COPY packages ./packages
+
+RUN npm install -g tsx
 
 ENV NODE_ENV=production
 ENV PORT=3001
@@ -25,4 +30,4 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD node -e "fetch('http://localhost:'+(process.env.PORT||3001)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-CMD ["sh", "-c", "node --import tsx/esm apps/api/src/main.ts"]
+CMD ["tsx", "apps/api/src/main.ts"]
