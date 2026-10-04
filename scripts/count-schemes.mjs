@@ -1,0 +1,11 @@
+import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync('apps/api/data.db', { readOnly: true });
+const q = (sql) => db.prepare(sql).get().n;
+const total = q('SELECT COUNT(*) AS n FROM channels');
+const https = q(`SELECT COUNT(*) AS n FROM channels WHERE lower(trim(stream_url)) LIKE 'https://%'`);
+const http = q(`SELECT COUNT(*) AS n FROM channels WHERE lower(trim(stream_url)) LIKE 'http://%'`);
+const online = q(`SELECT COUNT(*) AS n FROM channels WHERE status = 'online'`);
+const onlineHttp = q(`SELECT COUNT(*) AS n FROM channels WHERE status = 'online' AND lower(trim(stream_url)) LIKE 'http://%'`);
+const onlineHttps = q(`SELECT COUNT(*) AS n FROM channels WHERE status = 'online' AND lower(trim(stream_url)) LIKE 'https://%'`);
+console.log(JSON.stringify({ total, https, http, other: total - https - http, online, onlineHttp, onlineHttps }, null, 2));
+db.close();
