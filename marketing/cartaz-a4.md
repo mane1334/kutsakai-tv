@@ -30,7 +30,7 @@ Imprimir a cores, papel normal. Colar à altura dos olhos, perto da caixa/espera
 │   ⚽ Novelas · Futebol · Filmes · Música     │
 │   🇲🇿 Canais de Moçambique e do mundo        │
 │                                             │
-│   Dúvidas? WhatsApp: [SEU NÚMERO]           │
+│   Dúvidas? WhatsApp: 852536645           │
 │                                             │
 └─────────────────────────────────────────────┘
 ```

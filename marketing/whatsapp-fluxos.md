@@ -1,6 +1,6 @@
 # WhatsApp Business — fluxos e mensagens prontas
 
-Número: [SEU NÚMERO] · Nome da conta: Kutsakai TV · Horário no perfil: "Aprovações 8h–22h"
+Número: 852536645 · Nome da conta: Kutsakai TV · Horário no perfil: "Aprovações 8h–22h"
 
 Configurar em: WhatsApp Business → Ferramentas → Mensagens automáticas + Catálogo.
 
@@ -74,8 +74,8 @@ Configurar em: WhatsApp Business → Ferramentas → Mensagens automáticas + Ca
 
 ## Links wa.me (usar no site e cartazes)
 
-- Assinar: `https://wa.me/[NUMERO]?text=Ol%C3%A1!%20Quero%20assinar%20a%20Kutsakai%20TV%20📺`
-- Enviar comprovativo: `https://wa.me/[NUMERO]?text=J%C3%A1%20paguei!%20Segue%20o%20meu%20comprovativo%20e%20email:`
-- Indicar amigo: `https://wa.me/[NUMERO]?text=O%20meu%20amigo%20pagou!%20Quero%20o%20meu%20dia%20gr%C3%A1tis.%20Meu%20email:`
+- Assinar: `https://wa.me/258852536645?text=Ol%C3%A1!%20Quero%20assinar%20a%20Kutsakai%20TV%20📺`
+- Enviar comprovativo: `https://wa.me/258852536645?text=J%C3%A1%20paguei!%20Segue%20o%20meu%20comprovativo%20e%20email:`
+- Indicar amigo: `https://wa.me/258852536645?text=O%20meu%20amigo%20pagou!%20Quero%20o%20meu%20dia%20gr%C3%A1tis.%20Meu%20email:`
 
 Trocar `[NUMERO]` por formato internacional sem `+` (ex. `258841234567`) e `[MERCHANT]` pelos números reais.
