@@ -686,21 +686,11 @@ app.post('/v1/admin/backup/snapshot', auth, async (req: any, res) => {
   res.json({ ok, at: new Date().toISOString() });
 });
 const BACKUP_TABLES = ['users', 'user_preferences', 'channels', 'favorites', 'watch_history', 'user_channel_events', 'recommendations', 'subscriptions', 'plans', 'plan_channels', 'payments'];
-app.get('/v1/admin/backup', auth, (req: any, res) => {
-  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
-  const tables: any = {};
-  for (const t of BACKUP_TABLES) {
-    try { tables[t] = db.prepare(`SELECT * FROM ${t}`).all(); }
-    catch { tables[t] = []; }
-  }
-  res.setHeader('Content-Disposition', `attachment; filename="kutsakai-backup-${Date.now()}.json"`);
-  res.json({ exportedAt: new Date().toISOString(), tables });
-});
-app.post('/v1/admin/restore', auth, (req: any, res) => {
-  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
-  const incoming = (req.body as any)?.tables;
-  if (!incoming || typeof incoming !== 'object')
-    return res.status(400).json({ statusCode: 400, message: 'body.tables required (usa o JSON do /backup)' });
+
+// Núcleo do restore, reutilizado pelo endpoint manual e pelo restore
+// automático no arranque (cofre GitHub). Devolve resumo por tabela.
+function restoreTables(incoming: any): { ok: boolean; restored?: any; error?: string } {
+  if (!incoming || typeof incoming !== 'object') return { ok: false, error: 'body.tables required' };
   const summary: any = {};
   try {
     db.exec('BEGIN');
@@ -721,9 +711,51 @@ app.post('/v1/admin/restore', auth, (req: any, res) => {
     db.exec('COMMIT');
   } catch (e: any) {
     try { db.exec('ROLLBACK'); } catch { /* noop */ }
-    return res.status(500).json({ statusCode: 500, message: 'restore falhou: ' + (e?.message || e) });
+    return { ok: false, error: 'restore falhou: ' + (e?.message || e) };
   }
-  res.json({ ok: true, restored: summary });
+  return { ok: true, restored: summary };
+}
+
+// Cofre GitHub (repo privado, sem cartão): se a DB está vazia no arranque
+// (restart no Render) e BACKUP_GIT_URL aponta para o latest.json,
+// repõe users/subs/pagamentos antes do seed. RPO = intervalo do workflow.
+async function restoreFromGitHubIfEmpty(): Promise<boolean> {
+  const url = process.env.BACKUP_GIT_URL || '';
+  if (!url) return false;
+  try {
+    const n = (db.prepare('SELECT COUNT(*) n FROM channels').get() as any).n;
+    if (n > 0) return false; // disco com dados — nada a fazer
+  } catch { /* segue para tentar repor */ }
+  console.log('[backup] DB vazia, a repor do cofre GitHub…');
+  try {
+    const headers: Record<string, string> = {};
+    if (process.env.BACKUP_GIT_TOKEN) headers.authorization = `Bearer ${process.env.BACKUP_GIT_TOKEN}`;
+    const r = await fetch(url, { headers });
+    if (!r.ok) { console.log(`[backup] cofre respondeu ${r.status}`); return false; }
+    const j: any = await r.json();
+    const res = restoreTables(j?.tables);
+    console.log('[backup] restore do cofre:', res.ok ? JSON.stringify(res.restored) : res.error);
+    return res.ok;
+  } catch (e: any) {
+    console.log('[backup] cofre falhou:', e?.message);
+    return false;
+  }
+}
+app.get('/v1/admin/backup', auth, (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  const tables: any = {};
+  for (const t of BACKUP_TABLES) {
+    try { tables[t] = db.prepare(`SELECT * FROM ${t}`).all(); }
+    catch { tables[t] = []; }
+  }
+  res.setHeader('Content-Disposition', `attachment; filename="kutsakai-backup-${Date.now()}.json"`);
+  res.json({ exportedAt: new Date().toISOString(), tables });
+});
+app.post('/v1/admin/restore', auth, (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  const r = restoreTables((req.body as any)?.tables);
+  if (!r.ok) return res.status(400).json({ statusCode: 400, message: r.error });
+  res.json({ ok: true, restored: r.restored });
 });
 
 // --- pacotes: canais por plano + verificação profunda ---
@@ -795,6 +827,11 @@ app.listen(PORT, '0.0.0.0', () => {
     const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
     startR2Backups(dbPath, () => db.exec('PRAGMA wal_checkpoint(TRUNCATE)'));
   } catch (e: any) { console.log('[r2] arranque falhou:', e?.message); }
-  // free tier sem Shell: semeia canais sozinho se a DB estiver vazia (não bloqueia o arranque)
-  autoSeedIfEmpty().catch((e) => console.log('[seed] falhou', e?.message));
+  // cofre GitHub (sem cartão): repõe users/subs/pagamentos se o disco acordou
+  // vazio; só depois o seed semeia canais se continuar vazio.
+  (async () => {
+    await restoreFromGitHubIfEmpty().catch((e) => console.log('[backup] falhou', e?.message));
+    // free tier sem Shell: semeia canais sozinho se a DB estiver vazia (não bloqueia o arranque)
+    autoSeedIfEmpty().catch((e) => console.log('[seed] falhou', e?.message));
+  })();
 });

@@ -1,0 +1,53 @@
+name: backup-git
+
+# Cofre sem cartão: de 6 em 6h faz login na API, saca o /backup e empurra
+# para um repo PRIVADO (1 commit único, force-push — o repo fica sempre ~10MB).
+# No arranque, a API repõe esse latest.json sozinha se o disco estiver vazio.
+# Zero cartão, zero custo, corre com o PC desligado.
+#
+# Preparação (1x):
+#   1. Cria repo PRIVADO vazio (ex. mane1334/kutsakai-tv-backup), SEM readme.
+#   2. GitHub → Settings → Developer settings → Personal access tokens (classic)
+#      → Generate → scope `repo` → copiar.
+#   3. Neste repo → Settings → Secrets → Actions, adicionar:
+#        BACKUP_API_BASE = https://api.kutsakai.dpdns.org/v1
+#        ADMIN_EMAIL     = email da conta admin
+#        ADMIN_PASSWORD  = password dessa conta
+#        BACKUP_GIT_REPO = mane1334/kutsakai-tv-backup
+#        BACKUP_GIT_TOKEN = o PAT do passo 2
+#   4. No Render (API → Environment):
+#        BACKUP_GIT_URL = https://raw.githubusercontent.com/mane1334/kutsakai-tv-backup/main/latest.json
+#        BACKUP_GIT_TOKEN = o mesmo PAT
+#      (Redepois disso, restarts repõem users/subs/pagamentos sozinhos.)
+on:
+  schedule:
+    - cron: "15 */6 * * *" # 4x/dia (RPO ~6h)
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sacar backup da API
+        run: |
+          set -e
+          TOKEN=$(curl -fsS -X POST "${{ secrets.BACKUP_API_BASE }}/auth/login" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"${{ secrets.ADMIN_EMAIL }}\",\"password\":\"${{ secrets.ADMIN_PASSWORD }}\"}" \
+            | jq -r .accessToken)
+          curl -fsS "${{ secrets.BACKUP_API_BASE }}/admin/backup" \
+            -H "Authorization: Bearer $TOKEN" -o latest.json
+          ls -la latest.json
+          jq -e '.tables and (.tables.channels | length > 1000)' latest.json > /dev/null \
+            || (echo "backup vazio/corrompido — a abortar sem empurrar" && exit 1)
+      - name: Empurrar para o cofre (commit único)
+        run: |
+          set -e
+          rm -rf cofre && git clone "https://x-access-token:${{ secrets.BACKUP_GIT_TOKEN }}@github.com/${{ secrets.BACKUP_GIT_REPO }}.git" cofre
+          cd cofre
+          git checkout main 2>/dev/null || git checkout -b main
+          cp ../latest.json latest.json
+          git add latest.json
+          git -c user.name="kutsakai-backup" -c user.email="backup@kutsakai" commit --amend --no-edit --allow-empty || \
+            git -c user.name="kutsakai-backup" -c user.email="backup@kutsakai" commit -m "backup $(date -u +%F-%H%M)"
+          git push --force origin main

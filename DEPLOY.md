@@ -138,10 +138,27 @@ falharem — normal no free.
 - [ ] Keep-alive ativo (Actions verde + UptimeRobot)
 - [ ] **R2 configurado**: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` no Render → log mostra `[r2] snapshots a cada 15min`; força 1 snapshot em `/admin` (botão abaixo) e confirma `[r2] snapshot …MB guardado` nos logs
 
-## 6b. Persistência no Render Free (SQLite + R2 — obrigatório)
+## 6b. Persistência no Render Free (obrigatório — escolhe UMA opção)
 
-O disco do Render Free apaga a cada restart. Em vez de reescrever tudo para
-Turso/Neon, a API faz **snapshot do ficheiro `.db` para o Cloudflare R2**
+O disco do Render Free apaga a cada restart. Sem isto, cada restart perde
+users, subscrições e pagamentos.
+
+### OPÇÃO A — Cofre GitHub (sem cartão, recomendada)
+
+1. Cria um repo **privado e vazio** (ex. `kutsakai-tv-backup`), sem readme.
+2. Gera um PAT classic com scope `repo` (Settings → Developer settings).
+3. Neste repo → Settings → Secrets → Actions: `BACKUP_API_BASE`,
+   `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `BACKUP_GIT_REPO`, `BACKUP_GIT_TOKEN`.
+   (Detalhe completo no cabeçalho de `.github/workflows/backup-git.yml`.)
+4. No Render (API → Environment): `BACKUP_GIT_URL` (raw do `latest.json`)
+   + `BACKUP_GIT_TOKEN` (o PAT) → Manual Deploy.
+5. De 6 em 6h o workflow empurra o backup (commit único, ~10MB); no
+   arranque com disco vazio a API repõe sozinha (`[backup] restore do cofre`).
+   RPO ~6h. Podes correr manual: Actions → backup-git → Run workflow.
+
+### OPÇÃO B — Snapshots R2 (precisa cartão no Cloudflare, mesmo no free)
+
+Em vez de / além do cofre, snapshot do ficheiro `.db` para o Cloudflare R2
 (free: 10GB, sem custo de saída):
 
 1. Cloudflare dashboard → **R2** → **Create bucket** (ex. `kutsakai-tv`).
