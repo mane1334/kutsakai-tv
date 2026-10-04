@@ -1,4 +1,5 @@
 import './dark-luxury.css';
+import '../lib/polyfills';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {

@@ -116,6 +116,11 @@ a { color: inherit; }
   box-shadow:inset 0 1px 0 rgba(255,248,230,0.06); padding:48px 48px 24px; }
 .status-ok { font-family:var(--font-mono); font-size:12px; color:var(--success); }
 
+/* ---------- Comando de TV: foco sempre visível (navegação por setas) ---------- */
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
+  outline:2px solid var(--accent); outline-offset:2px; border-radius:8px; }
+.chan-row:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+
 /* ---------- TV player: glass + fintech + dark-luxury ---------- */
 .tv-root { height:100vh; overflow:hidden; display:flex; flex-direction:column; background:#050403; }
 .no-scrollbar { scrollbar-width:none; -ms-overflow-style:none; }

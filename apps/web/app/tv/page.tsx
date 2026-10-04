@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import Hls from 'hls.js';
 import { API, apiGet, authFetch, logout, tryRefresh, tokenExpiring } from '../../lib/api';
 
 const I = {
@@ -175,35 +174,6 @@ export default function TV() {
       }
     };
     const onLoaded = () => { if (!disposed) setStreamLoading(false); };
-    video.addEventListener('error', onError);
-    video.addEventListener('loadedmetadata', onLoaded);
-    if (Hls.isSupported() && isHls) {
-      hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        manifestLoadingTimeOut: 10000,
-        manifestLoadingMaxRetry: 1,
-        levelLoadingTimeOut: 10000,
-        levelLoadingMaxRetry: 1,
-      });
-      hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
-        if (data?.fatal) {
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
-            networkRetries += 1;
-            hls.startLoad();
-          }
-          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-          else onError();
-        }
-      });
-      hls.attachMedia(video);
-      hls.loadSource(streamUrl);
-      video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
-    } else {
-      video.src = streamUrl;
-      video.load();
-      video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
-    }
     const onPlay = () => setPlaying(true);
     const onPause = () => {
       setPlaying(false);
@@ -213,6 +183,48 @@ export default function TV() {
     };
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
+    video.addEventListener('error', onError);
+    video.addEventListener('loadedmetadata', onLoaded);
+    // hls.js em import dinâmico: se o módulo falhar neste browser (TV antiga),
+    // cai no <video> nativo em vez de rebentar a página.
+    (async () => {
+      let HlsLib: any = null;
+      try { HlsLib = (await import('hls.js')).default; } catch { HlsLib = null; }
+      if (disposed) return;
+      if (HlsLib?.isSupported?.() && isHls) {
+        try {
+          hls = new HlsLib({
+            enableWorker: true,
+            lowLatencyMode: true,
+            manifestLoadingTimeOut: 10000,
+            manifestLoadingMaxRetry: 1,
+            levelLoadingTimeOut: 10000,
+            levelLoadingMaxRetry: 1,
+          });
+        } catch { hls = null; }
+        if (hls) {
+          hls.on(HlsLib.Events.ERROR, (_event: string, data: any) => {
+            if (data?.fatal) {
+              if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
+                networkRetries += 1;
+                hls.startLoad();
+              }
+              else if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+              else onError();
+            }
+          });
+          hls.attachMedia(video);
+          hls.loadSource(streamUrl);
+          video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
+          return;
+        }
+      }
+      if (!disposed) {
+        video.src = streamUrl;
+        video.load();
+        video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
+      }
+    })();
     return () => {
       disposed = true;
       video.removeEventListener('play', onPlay);
@@ -231,6 +243,15 @@ export default function TV() {
   }, []);
 
   useEffect(() => {
+    // Comando de TV: as setas/OK têm de mover o foco nativamente.
+    // Se sequestrarmos ArrowUp/Down/ Espaço, o utilizador fica preso sem
+    // conseguir chegar aos botões — parece "erro" mas é navegação morta.
+    const isTV = typeof navigator !== 'undefined' &&
+      (/TV|Smart ?TV|Google ?TV|HbbTV|NetCast|Tizen|Web0S|Philips|BRAVIA|AFT|Android.*TV/i.test(navigator.userAgent || '')
+        || (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === false
+          && 'ontouchstart' !in window && Math.min(screen.width, screen.height) >= 720
+          && /Android/i.test(navigator.userAgent || '')));
+    if (isTV) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
       if (e.key === 'ArrowDown') { e.preventDefault(); zap(1); }

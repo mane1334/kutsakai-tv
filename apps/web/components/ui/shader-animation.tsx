@@ -1,8 +1,7 @@
 // components/ui/shader-animation.tsx
 "use client"
 
-import { useEffect, useRef } from "react"
-import * as THREE from "three"
+import { useEffect, useRef, useState } from "react"
 
 export type ShaderAnimationProps = {
   /** Animation speed multiplier (1 = default). */
@@ -29,10 +28,37 @@ export function ShaderAnimation({
   style,
 }: ShaderAnimationProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const cleanup = useRef<(() => void) | null>(null)
+  // TVs e browsers antigos muitas vezes não têm WebGL2 (ou bloqueiam o GPU):
+  // sem este escape, a homepage rebenta com "application error".
+  const [glOK, setGlOK] = useState<boolean | null>(null)
 
   useEffect(() => {
+    try {
+      const probe = document.createElement("canvas").getContext("webgl2");
+      setGlOK(!!probe);
+    } catch {
+      setGlOK(false);
+    }
+  }, [])
+
+  useEffect(() => {
+    if (glOK !== true) return;
     const container = containerRef.current
     if (!container) return
+    let cancelled = false;
+
+    (async () => {
+      // import dinâmico: se o three falhar neste browser, cai no fallback
+      // em vez de matar a página inteira.
+      let THREE: any;
+      try {
+        THREE = await import("three");
+      } catch {
+        setGlOK(false);
+        return;
+      }
+      if (cancelled) return;
 
     const vertexShader = `
       void main() { gl_Position = vec4(position, 1.0); }
@@ -86,7 +112,13 @@ export function ShaderAnimation({
     scene.add(mesh)
 
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    let renderer: any;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true })
+    } catch {
+      setGlOK(false);
+      return;
+    }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     container.appendChild(renderer.domElement)
 
@@ -100,13 +132,19 @@ export function ShaderAnimation({
 
     let animationId = 0
     const animate = () => {
+      if (cancelled) return;
       animationId = requestAnimationFrame(animate)
       if (!reduced) uniforms.time.value += 0.05 * speed
-      renderer.render(scene, camera)
+      try {
+        renderer.render(scene, camera)
+      } catch {
+        cancelAnimationFrame(animationId)
+        setGlOK(false);
+      }
     }
     animate()
 
-    return () => {
+    cleanup.current = () => {
       window.removeEventListener("resize", onResize)
       cancelAnimationFrame(animationId)
       if (renderer.domElement.parentNode === container) {
@@ -115,8 +153,29 @@ export function ShaderAnimation({
       renderer.dispose()
       geometry.dispose()
       material.dispose()
-    }
-  }, [speed, lineWidth, dispersion, tint, brightness])
+    };
+    })();
+
+    return () => {
+      cancelled = true;
+      if (cleanup.current) { cleanup.current(); cleanup.current = null; }
+    };
+  }, [glOK, speed, lineWidth, dispersion, tint, brightness])
+
+  // Fallback estático (CSS puro): mesma identidade dourado/preto, zero WebGL.
+  if (glOK === false) {
+    return (
+      <div
+        className={className}
+        style={{
+          background:
+            "radial-gradient(120% 90% at 50% 110%, rgba(255,170,60,0.28) 0%, rgba(255,170,60,0.06) 45%, #000 75%), #000",
+          overflow: "hidden",
+          ...style,
+        }}
+      />
+    );
+  }
 
   return (
     <div
