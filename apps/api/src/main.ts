@@ -7,6 +7,7 @@ import { db } from './db.js';
 import { scoreChannel, EVENT_WEIGHTS } from '../../../packages/recommendation-engine/index.js';
 import { providers, seedPlans, getPlan, getPaymentMethods, hasActiveSubscription, authorizeChannel, completePayment, refreshPaymentStatus } from './payments.js';
 import { checkStream } from '../../../packages/stream-monitor/index.js';
+import { autoSeedIfEmpty } from './autoseed.js';
 
 seedPlans();
 
@@ -572,4 +573,8 @@ app.post('/v1/admin/channels/:id/verify', auth, async (req: any, res) => {
 });
 
 const PORT = Number(process.env.PORT || 3001);
-app.listen(PORT, '0.0.0.0', () => console.log(`API on :${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`API on :${PORT}`);
+  // free tier sem Shell: semeia canais sozinho se a DB estiver vazia (não bloqueia o arranque)
+  autoSeedIfEmpty().catch((e) => console.log('[seed] falhou', e?.message));
+});
