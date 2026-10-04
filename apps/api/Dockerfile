@@ -7,9 +7,6 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY apps/worker/package.json apps/worker/package.json
-COPY packages/m3u-parser/package.json packages/m3u-parser/package.json
-COPY packages/recommendation-engine/package.json packages/recommendation-engine/package.json
-COPY packages/stream-monitor/package.json packages/stream-monitor/package.json
 
 RUN npm ci --omit=dev || npm install --omit=dev
 
