@@ -141,6 +141,7 @@ export default function TV() {
     setStreamError(null);
     setStreamLoading(true);
     setPlaying(false);
+    let networkRetries = 0;
     const isHls = (() => {
       try { return new URL(current.stream_url).pathname.toLowerCase().endsWith('.m3u8'); }
       catch { return current.stream_url.toLowerCase().split(/[?#]/)[0].endsWith('.m3u8'); }
@@ -155,16 +156,26 @@ export default function TV() {
     video.addEventListener('error', onError);
     video.addEventListener('loadedmetadata', onLoaded);
     if (Hls.isSupported() && isHls) {
-      hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        manifestLoadingTimeOut: 10000,
+        manifestLoadingMaxRetry: 1,
+        levelLoadingTimeOut: 10000,
+        levelLoadingMaxRetry: 1,
+      });
       hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
         if (data?.fatal) {
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
+            networkRetries += 1;
+            hls.startLoad();
+          }
           else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
           else onError();
         }
       });
-      hls.loadSource(current.stream_url);
       hls.attachMedia(video);
+      hls.loadSource(current.stream_url);
       video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
     } else {
       video.src = current.stream_url;
