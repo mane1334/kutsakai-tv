@@ -23,6 +23,9 @@ services:
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
+      - key: ADMIN_EMAIL
+        # email da conta admin (regista essa conta no site → fica admin sozinha)
+        value:
       - key: PLAN_DAILY_PRICE
         value: 15
       - key: PLAN_WEEKLY_PRICE

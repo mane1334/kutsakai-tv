@@ -42,6 +42,17 @@ function auth(req: any, res: any, next: any) {
 }
 const j = (s: string) => { try { return JSON.parse(s); } catch { return []; } };
 
+// bootstrap do 1º admin sem Shell: define ADMIN_EMAIL no Render;
+// a conta registada (ou login) com esse email fica is_admin=1 sozinha.
+function maybePromoteAdmin(userId: string, email: string) {
+  const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  if (!adminEmail || email.trim().toLowerCase() !== adminEmail) return;
+  try {
+    db.prepare('UPDATE users SET is_admin=1 WHERE id=?').run(userId);
+    console.log(`[admin] promovido: ${email}`);
+  } catch (e: any) { console.log('[admin] promote falhou', e?.message); }
+}
+
 function setRefreshCookie(res: any, token: string) {
   const isProd = process.env.NODE_ENV === 'production';
   res.cookie('refresh_token', token, {
@@ -68,6 +79,7 @@ app.post('/v1/auth/register', async (req, res) => {
   db.prepare('INSERT INTO users (id,name,email,password_hash,country,language) VALUES (?,?,?,?,?,?)')
     .run(id, name, email, hash, country || null, language || 'pt');
   db.prepare('INSERT INTO user_preferences (user_id) VALUES (?)').run(id);
+  maybePromoteAdmin(id, email);
   const freePlan: any = db.prepare("SELECT id FROM plans WHERE code='free'").get();
   db.prepare('INSERT INTO subscriptions (id,user_id,plan,plan_id,status) VALUES (?,?,?,?,?)').run(randomUUID(), id, 'free', freePlan?.id || null, 'ACTIVE');
   const rt = signRefresh(id);
@@ -84,6 +96,7 @@ app.post('/v1/auth/login', async (req, res) => {
   const rt = signRefresh(u.id);
   db.prepare("INSERT INTO refresh_tokens (id,user_id,token,expires_at) VALUES (?,?,?,datetime('now','+30 days'))").run(randomUUID(), u.id, rt);
   setRefreshCookie(res, rt);
+  maybePromoteAdmin(u.id, u.email);
   res.json({ accessToken: signAccess(u.id), user: { id: u.id, name: u.name, email: u.email } });
 });
 
