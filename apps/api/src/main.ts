@@ -14,6 +14,7 @@ seedPlans();
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 dotenv.config({ path: path.join(process.cwd(), '.env') });
 
 const app = express();
@@ -52,6 +53,22 @@ function auth(req: any, res: any, next: any) {
 }
 const j = (s: string) => { try { return JSON.parse(s); } catch { return []; } };
 const isSecureStream = (url: unknown) => typeof url === 'string' && url.trim().toLowerCase().startsWith('https://');
+const isHttpStream = (url: unknown) => typeof url === 'string' && /^https?:\/\//i.test(url.trim());
+
+function relayUrl(req: any, channelId: string, sourceUrl: string): string {
+  const base = `${req.protocol}://${req.get('host')}`;
+  return `${base}/v1/channels/${encodeURIComponent(channelId)}/stream?url=${encodeURIComponent(sourceUrl)}`;
+}
+
+function publicChannel(req: any, c: any) {
+  const stream = String(c.stream_url || '').trim();
+  return {
+    ...c,
+    stream_url: isHttpStream(stream) && !isSecureStream(stream) ? relayUrl(req, c.id, stream) : stream,
+    languages: j(c.languages),
+    categories: j(c.categories),
+  };
+}
 
 // bootstrap do 1º admin sem Shell: define ADMIN_EMAIL no Render;
 // a conta registada (ou login) com esse email fica is_admin=1 sozinha.
@@ -210,7 +227,7 @@ function paidViewer(req: any): string | null {
 app.get('/v1/channels', (req, res) => {
   const { q, country, language, category, region, status, page = '1', limit = '48' } = req.query as any;
   const viewer = paidViewer(req);
-  let rows: any[] = db.prepare("SELECT * FROM channels WHERE stream_url LIKE 'https://%' ORDER BY reliability_score DESC, name LIMIT 5000").all();
+  let rows: any[] = db.prepare('SELECT * FROM channels ORDER BY reliability_score DESC, name LIMIT 5000').all();
   if (!viewer) rows = rows.filter((c) => (c.access_level || 'FREE').toUpperCase() === 'FREE');
   if (status !== 'all') rows = rows.filter((c) => c.status !== 'offline');
   if (q) rows = rows.filter((c) => c.name.toLowerCase().includes(String(q).toLowerCase()));
@@ -220,19 +237,71 @@ app.get('/v1/channels', (req, res) => {
   if (category) rows = rows.filter((c) => j(c.categories).map((x: string) => x.toLowerCase()).includes(String(category).toLowerCase()));
   if (status && status !== 'all') rows = rows.filter((c) => c.status === status);
   const p = Math.max(1, parseInt(String(page))), l = Math.min(100, parseInt(String(limit)));
-  const map = (c: any) => ({ ...c, languages: j(c.languages), categories: j(c.categories) });
+  const map = (c: any) => publicChannel(req, c);
   res.json({ total: rows.length, page: p, data: rows.slice((p - 1) * l, p * l).map(map) });
+});
+
+// Relay HTTPS controlado: só permite a URL que pertence ao mesmo host da fonte
+// registada no canal; não aceita URLs arbitrários nem encaminha credenciais.
+app.get('/v1/channels/:id/stream', async (req: any, res) => {
+  const c: any = db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.id);
+  if (!c || !isHttpStream(c.stream_url)) return res.status(404).json({ statusCode: 404, message: 'stream not found' });
+  if ((c.access_level || 'FREE').toUpperCase() === 'PREMIUM' && !paidViewer(req))
+    return res.status(403).json({ statusCode: 403, message: 'upgrade_required' });
+  const requested = String(req.query.url || '');
+  let source: URL, original: URL;
+  try {
+    source = new URL(requested);
+    original = new URL(c.stream_url);
+  } catch { return res.status(400).json({ statusCode: 400, message: 'invalid stream URL' }); }
+  if (!['http:', 'https:'].includes(source.protocol) || source.hostname !== original.hostname)
+    return res.status(403).json({ statusCode: 403, message: 'stream host not allowed' });
+  try {
+    const headers: Record<string, string> = { 'User-Agent': 'KutsakaiTV/1.0' };
+    if (req.headers.range) headers.Range = String(req.headers.range);
+    let upstream = await fetch(source, { headers, redirect: 'manual' });
+    for (let i = 0; i < 3 && upstream.status >= 300 && upstream.status < 400; i++) {
+      const location = upstream.headers.get('location');
+      if (!location) break;
+      const next = new URL(location, source);
+      if (!['http:', 'https:'].includes(next.protocol) || next.hostname !== original.hostname)
+        return res.status(403).json({ statusCode: 403, message: 'redirect host not allowed' });
+      source = next;
+      upstream = await fetch(source, { headers, redirect: 'manual' });
+    }
+    if (!upstream.ok || !upstream.body) return res.status(upstream.status || 502).end();
+    const contentType = upstream.headers.get('content-type') || '';
+    const looksPlaylist = contentType.includes('mpegurl') || contentType.includes('m3u8') || source.pathname.toLowerCase().endsWith('.m3u8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-store');
+    if (looksPlaylist) {
+      let text = await upstream.text();
+      const rewrite = (raw: string) => relayUrl(req, c.id, new URL(raw, source).toString());
+      text = text.replace(/^(?!#)(\s*[^\s]+\s*)$/gm, (line) => rewrite(line.trim()));
+      text = text.replace(/URI="([^"]+)"/g, (_m, raw) => `URI="${rewrite(raw)}"`);
+      res.type('application/vnd.apple.mpegurl').send(text);
+    } else {
+      if (contentType) res.setHeader('Content-Type', contentType);
+      const length = upstream.headers.get('content-length');
+      if (length) res.setHeader('Content-Length', length);
+      const range = upstream.headers.get('content-range');
+      if (range) res.setHeader('Content-Range', range);
+      res.status(upstream.status);
+      Readable.fromWeb(upstream.body as any).pipe(res);
+    }
+  } catch (e: any) {
+    res.status(502).json({ statusCode: 502, message: String(e?.message || 'upstream unavailable').slice(0, 160) });
+  }
 });
 
 app.get('/v1/channels/:id', (req, res) => {
   const c: any = db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.id);
   if (!c) return res.status(404).json({ statusCode: 404, message: 'not found' });
-  if (!isSecureStream(c.stream_url)) return res.status(410).json({ statusCode: 410, message: 'stream inseguro: apenas HTTPS é suportado no site online' });
   if ((c.access_level || 'FREE').toUpperCase() === 'PREMIUM' && !paidViewer(req)) {
     const { stream_url, ...rest } = c;
     return res.status(403).json({ ...rest, languages: j(c.languages), categories: j(c.categories), authorized: false, reason: 'upgrade_required' });
   }
-  res.json({ ...c, languages: j(c.languages), categories: j(c.categories) });
+  res.json(publicChannel(req, c));
 });
 
 app.get('/v1/channels/:id/related', (req, res) => {
@@ -240,14 +309,14 @@ app.get('/v1/channels/:id/related', (req, res) => {
   if (!c) return res.status(404).json({ statusCode: 404, message: 'not found' });
   const cats = j(c.categories), langs = j(c.languages);
   const viewer = paidViewer(req);
-  let rows: any[] = db.prepare("SELECT * FROM channels WHERE id != ? AND status != ? AND stream_url LIKE 'https://%' LIMIT 500").all(c.id, 'offline');
+  let rows: any[] = db.prepare('SELECT * FROM channels WHERE id != ? AND status != ? LIMIT 500').all(c.id, 'offline');
   if (!viewer) rows = rows.filter((r) => (r.access_level || 'FREE').toUpperCase() === 'FREE');
   const scored = rows.map((r) => {
     const rc = j(r.categories), rl = j(r.languages);
     const overlap = rc.filter((x: string) => cats.includes(x)).length + rl.filter((x: string) => langs.includes(x)).length;
     return { r, overlap };
   }).filter((x) => x.overlap > 0).sort((a, b) => b.overlap - a.overlap || b.r.reliability_score - a.r.reliability_score).slice(0, 12);
-  res.json(scored.map((x) => ({ ...x.r, languages: j(x.r.languages), categories: j(x.r.categories) })));
+  res.json(scored.map((x) => publicChannel(req, x.r)));
 });
 
 // --- favorites / history / events ---
@@ -300,7 +369,7 @@ app.get('/v1/me/recommendations', auth, (req: any, res) => {
   const maxP = Math.max(1, ...pop.map((p) => p.n));
   const popMap = new Map(pop.map((p) => [p.channel_id, Math.log1p(p.n) / Math.log1p(maxP)]));
   const isPaid = db.prepare(`SELECT COUNT(*) n FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.user_id=? AND s.status='ACTIVE' AND (s.expires_at IS NULL OR s.expires_at > datetime('now')) AND (p.duration_days || 0) > 0`).get(req.userId) as any;
-  const chans: any[] = db.prepare("SELECT * FROM channels WHERE status != 'offline' AND stream_url LIKE 'https://%' LIMIT 2000").all();
+  const chans: any[] = db.prepare(`SELECT * FROM channels WHERE status != 'offline' LIMIT 2000`).all();
   const visible = isPaid.n ? chans : chans.filter((c) => (c.access_level || 'FREE').toUpperCase() === 'FREE');
   const scored = visible.map((c) => {
     const cl = j(c.languages).map((x: string) => String(x).toLowerCase());
