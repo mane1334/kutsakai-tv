@@ -44,6 +44,8 @@ export default function TV() {
   const [favs, setFavs] = useState<string[]>([]);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [streamLoading, setStreamLoading] = useState(false);
   const [q, setQ] = useState('');
   const [gate, setGate] = useState<string | null>(null);
   const [paid, setPaid] = useState(false);
@@ -132,17 +134,42 @@ export default function TV() {
   }, [current?.id]);
 
   useEffect(() => {
-    if (!current || !videoRef.current || gate) return;
+    if (!current || !videoRef.current || gate || !current.stream_url) return;
     const video = videoRef.current;
     let hls: any = null;
-    if (Hls.isSupported() && current.stream_url?.includes('.m3u8')) {
-      hls = new Hls();
+    let disposed = false;
+    setStreamError(null);
+    setStreamLoading(true);
+    setPlaying(false);
+    const isHls = (() => {
+      try { return new URL(current.stream_url).pathname.toLowerCase().endsWith('.m3u8'); }
+      catch { return current.stream_url.toLowerCase().split(/[?#]/)[0].endsWith('.m3u8'); }
+    })();
+    const onError = () => {
+      if (!disposed) {
+        setStreamLoading(false);
+        setStreamError('O sinal não respondeu. Tenta novamente ou escolhe outro canal.');
+      }
+    };
+    const onLoaded = () => { if (!disposed) setStreamLoading(false); };
+    video.addEventListener('error', onError);
+    video.addEventListener('loadedmetadata', onLoaded);
+    if (Hls.isSupported() && isHls) {
+      hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+      hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
+        if (data?.fatal) {
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+          else onError();
+        }
+      });
       hls.loadSource(current.stream_url);
       hls.attachMedia(video);
-      video.play().catch(() => {});
+      video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
     } else {
       video.src = current.stream_url;
-      video.play().catch(() => {});
+      video.load();
+      video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
     }
     const onPlay = () => setPlaying(true);
     const onPause = () => {
@@ -153,8 +180,18 @@ export default function TV() {
     };
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
-    return () => { video.removeEventListener('play', onPlay); video.removeEventListener('pause', onPause); hls?.destroy(); };
-  }, [current?.id]);
+    return () => {
+      disposed = true;
+      video.removeEventListener('play', onPlay);
+      video.removeEventListener('pause', onPause);
+      video.removeEventListener('error', onError);
+      video.removeEventListener('loadedmetadata', onLoaded);
+      hls?.destroy();
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    };
+  }, [current?.id, current?.stream_url, gate]);
 
   const zap = useCallback((dir: 1 | -1) => {
     setList((l) => { setIdx((i) => (i + dir + l.length) % Math.max(l.length, 1)); return l; });
@@ -285,7 +322,11 @@ export default function TV() {
               {gate ? (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: 13 }}>sinal codificado — plano necessário</div>
               ) : current
-                ? <video ref={videoRef} controls playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
+                ? <>
+                  <video ref={videoRef} controls playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
+                  {streamLoading && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.42)', color: 'var(--text-body)', fontSize: 13 }}>a ligar ao sinal…</div>}
+                  {streamError && <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center', justifyContent: 'center', padding: 24, background: 'rgba(0,0,0,0.72)', color: 'var(--text-body)', fontSize: 13, textAlign: 'center' }}><span>{streamError}</span><button onClick={() => setStreamError(null)} className="btn btn-secondary btn-sm">Fechar aviso</button></div>}
+                </>
                 : <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)' }}>a sintonizar…</div>}
               {current && showInfo && (
                 <div className="glass-panel" style={{ position: 'absolute', left: 14, right: 14, bottom: 14, padding: '14px 18px', borderRadius: 14 }}>

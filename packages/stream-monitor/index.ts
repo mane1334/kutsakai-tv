@@ -60,7 +60,11 @@ export async function checkStream(url: string, budgetMs = 15000): Promise<CheckR
     const head = await readFirstChunk(res);
     g.done();
     const latency = Date.now() - t0;
-    const looksHls = url.includes('.m3u8') || head.includes('#EXTM3U');
+    // Alguns provedores acrescentam tokens (?token=...) depois da extensão.
+    // A deteção pelo pathname evita tratar uma playlist HLS como stream direto.
+    let urlPath = url;
+    try { urlPath = new URL(url).pathname; } catch { /* URL inválida será tratada pelo fetch */ }
+    const looksHls = urlPath.toLowerCase().endsWith('.m3u8') || head.includes('#EXTM3U');
     if (!looksHls) {
       // stream direto (mp4/ts): cabeçalho + bytes = prova suficiente
       return { status: latency > 4000 ? 'degraded' : 'online', latencyMs: latency, provedBySegment: head.length > 0 };
@@ -74,7 +78,9 @@ export async function checkStream(url: string, budgetMs = 15000): Promise<CheckR
       const vtext = await readFirstChunk(vr);
       g2.done();
       first = firstMediaUri(url, vtext, true);
-      if (first && first.endsWith('.m3u8')) {
+      let firstPath = first || '';
+      try { firstPath = first ? new URL(first).pathname : ''; } catch { /* segue como URI simples */ }
+      if (first && firstPath.toLowerCase().endsWith('.m3u8')) {
         playlistUrl = first;
         const g3 = timeoutSignal(remain());
         const pr = await fetch(first, { signal: g3.signal, redirect: 'follow' } as any);
