@@ -21,7 +21,7 @@ app.set('trust proxy', 1);
 app.use(cookieParser());
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',').map((s) => s.trim()).filter(Boolean);
 app.use(cors({ origin: allowedOrigins, credentials: true }));
-app.use(express.json({ limit: '3mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'dev-refresh-change-me';
@@ -527,6 +527,50 @@ app.get('/v1/admin/users', auth, (req: any, res) => {
   if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
   const rows = db.prepare('SELECT id,name,email,country,created_at FROM users ORDER BY created_at DESC LIMIT 200').all();
   res.json(rows);
+});
+
+// --- admin: backup / restore (a DB no Render Free é efémera e apaga a cada restart) ---
+// Os canais re-semeiam sozinhos no arranque; o backup serve para users,
+// favoritos, histórico, subscrições, pagamentos e níveis PREMIUM.
+const BACKUP_TABLES = ['users', 'user_preferences', 'channels', 'favorites', 'watch_history', 'user_channel_events', 'recommendations', 'subscriptions', 'plans', 'plan_channels', 'payments'];
+app.get('/v1/admin/backup', auth, (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  const tables: any = {};
+  for (const t of BACKUP_TABLES) {
+    try { tables[t] = db.prepare(`SELECT * FROM ${t}`).all(); }
+    catch { tables[t] = []; }
+  }
+  res.setHeader('Content-Disposition', `attachment; filename="kutsakai-backup-${Date.now()}.json"`);
+  res.json({ exportedAt: new Date().toISOString(), tables });
+});
+app.post('/v1/admin/restore', auth, (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  const incoming = (req.body as any)?.tables;
+  if (!incoming || typeof incoming !== 'object')
+    return res.status(400).json({ statusCode: 400, message: 'body.tables required (usa o JSON do /backup)' });
+  const summary: any = {};
+  try {
+    db.exec('BEGIN');
+    for (const t of BACKUP_TABLES) {
+      const rows = Array.isArray(incoming[t]) ? incoming[t] : [];
+      if (!rows.length) { summary[t] = 0; continue; }
+      const cols: any[] = db.prepare(`PRAGMA table_info(${t})`).all() as any[];
+      const names = cols.map((c) => c.name).filter((n) => n in (rows[0] as any));
+      if (!names.length) { summary[t] = 0; continue; }
+      const stmt = db.prepare(`INSERT OR REPLACE INTO ${t} (${names.join(',')}) VALUES (${names.map(() => '?').join(',')})`);
+      let n = 0;
+      for (const r of rows) {
+        try { stmt.run(...names.map((k) => (r as any)[k] ?? null)); n++; }
+        catch { /* linha incompatível: ignora */ }
+      }
+      summary[t] = n;
+    }
+    db.exec('COMMIT');
+  } catch (e: any) {
+    try { db.exec('ROLLBACK'); } catch { /* noop */ }
+    return res.status(500).json({ statusCode: 500, message: 'restore falhou: ' + (e?.message || e) });
+  }
+  res.json({ ok: true, restored: summary });
 });
 
 // --- pacotes: canais por plano + verificação profunda ---
