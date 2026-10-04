@@ -1,10 +1,13 @@
-// apps/api/src/db.ts — SQLite local (dev / VM com disco) + aviso prod.
-// Em Render Free o disco é efémero: a data.db apaga a cada restart/redeploy.
-// Fase 2 (quando quiseres persistência real free): migrar para Turso/Neon
-// (isso obriga reescrever os db.prepare para async — deixo para depois).
+// apps/api/src/db.ts — SQLite local + snapshots no R2 (persistência free).
+// O disco do Render Free é efémero: a cada restart a data.db some.
+// Em vez de migrar para Turso/Neon (que obrigaria reescrever TODOS os
+// db.prepare para async), o ficheiro .db faz snapshot para o Cloudflare R2:
+// restore no arranque (só se o disco estiver vazio) + upload periódico.
+// Sem env R2_* configurado, comporta-se como antes (dev local não muda).
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import { r2Configured, r2DownloadDb } from './persist-r2.js';
 
 const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
 
@@ -12,6 +15,19 @@ const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
 try {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 } catch { /* noop */ }
+
+// disco vazio (restart no Render) + R2 configurado → repõe o snapshot.
+// Nunca toca num ficheiro local existente (dev local está a salvo).
+if (!fs.existsSync(dbPath) && r2Configured()) {
+  console.log('[db] disco vazio, a repor snapshot do R2…');
+  const snap = await r2DownloadDb();
+  if (snap) {
+    fs.writeFileSync(dbPath, snap);
+    console.log(`[db] snapshot reposto (${(snap.length / 1048576).toFixed(1)}MB)`);
+  } else {
+    console.log('[db] sem snapshot no R2 — arranque limpo (seed automático)');
+  }
+}
 
 export const db = new DatabaseSync(dbPath);
 // concorrência: WAL + espera em vez de "database is locked"
@@ -80,5 +96,8 @@ for (const sql of [
 }
 
 if (process.env.NODE_ENV === 'production' && !process.env.SQLITE_PATH) {
-  console.warn('[db] SQLITE_PATH não definido em produção — a usar ./data.db (efémero no Render Free). Define SQLITE_PATH=/data/data.db com disco, ou migra para Turso/Neon.');
+  console.warn('[db] SQLITE_PATH não definido em produção — a usar ./data.db (efémero no Render Free; o snapshot R2 repõe no arranque). Define SQLITE_PATH=/data/data.db com disco, se um dia tiveres volume.');
+}
+if (process.env.NODE_ENV === 'production' && !r2Configured()) {
+  console.warn('[db] R2_* sem configurar — SEM persistência: cada restart perde users/pagamentos. Cria o bucket e define as envs (ver DEPLOY.md).');
 }

@@ -26,6 +26,14 @@ export default function Admin() {
   const [addResults, setAddResults] = useState<any[]>([]);
   const [verifyMsg, setVerifyMsg] = useState('');
   const [bulkMsg, setBulkMsg] = useState('');
+  const [snapMsg, setSnapMsg] = useState('');
+
+  const snapshotNow = async () => {
+    if (!window.confirm('Guardar snapshot da base de dados no R2 agora?')) return;
+    setSnapMsg('a guardar…');
+    const r = await authFetch(`${API}/admin/backup/snapshot`, { method: 'POST' }).then((x) => x.json()).catch(() => null);
+    setSnapMsg(r?.ok ? `guardado às ${r.at?.slice(11, 19) || ''}. Restarts já não apagam nada.` : (r?.message || 'falhou — R2 configurado?'));
+  };
 
   const loadPlans = async () => {
     const r = await authFetch(`${API}/admin/plans`);
@@ -197,6 +205,17 @@ export default function Admin() {
             </div>
           ))}
         </div>
+
+        <section className="card reveal visible" style={{ padding: 24, marginBottom: 16 }}>
+          <span className="section-label">[Persistência — snapshot R2]</span>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
+            <button onClick={snapshotNow} className="btn btn-primary btn-sm">Snapshot agora (R2)</button>
+            {snapMsg && <span className="tnum" style={{ fontSize: 12, color: 'var(--accent)' }}>{snapMsg}</span>}
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: '8px 0 0' }}>
+            Guarda a base de dados no R2 para sobreviver a restarts do Render. Sem R2 configurado, o botão responde "R2 sem configurar".
+          </p>
+        </section>
 
         <section className="card reveal visible" style={{ padding: 24, marginBottom: 16 }}>
           <span className="section-label">[Pagamentos — aprovar]</span>

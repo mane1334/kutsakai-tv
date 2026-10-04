@@ -136,6 +136,25 @@ falharem — normal no free.
 - [ ] `ALLOWED_ORIGINS` no Render tem os 2 domínios finais
 - [ ] `NEXT_PUBLIC_API_URL` no Pages aponta para `https://api.kutsakai.dpdns.org/v1`
 - [ ] Keep-alive ativo (Actions verde + UptimeRobot)
+- [ ] **R2 configurado**: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` no Render → log mostra `[r2] snapshots a cada 15min`; força 1 snapshot em `/admin` (botão abaixo) e confirma `[r2] snapshot …MB guardado` nos logs
+
+## 6b. Persistência no Render Free (SQLite + R2 — obrigatório)
+
+O disco do Render Free apaga a cada restart. Em vez de reescrever tudo para
+Turso/Neon, a API faz **snapshot do ficheiro `.db` para o Cloudflare R2**
+(free: 10GB, sem custo de saída):
+
+1. Cloudflare dashboard → **R2** → **Create bucket** (ex. `kutsakai-tv`).
+2. R2 → **Manage R2 API tokens** → Create token com **Object Read & Write**
+   aplicado **só a esse bucket**. Guarda: Account ID, Access Key, Secret.
+3. No Render (serviço da API → Environment): adiciona as 4 envs
+   (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`)
+   + opcional `BACKUP_INTERVAL_MIN=15`. Faz **Manual Deploy**.
+4. Comportamento: no arranque, se o disco estiver vazio, repõe o snapshot
+   (`[db] snapshot reposto`); a cada 15 min + no shutdown faz upload;
+   no `/admin` há botão **"Snapshot agora (R2)"** para forçar.
+5. Sem as envs, a API avisa no log (`[db] R2_* sem configurar`) e funciona
+   como antes (efémero) — nada parte em dev local.
 
 ## 7. Quando sair do free
 

@@ -8,6 +8,7 @@ import { scoreChannel, EVENT_WEIGHTS } from '../../../packages/recommendation-en
 import { providers, seedPlans, getPlan, getPaymentMethods, hasActiveSubscription, authorizeChannel, completePayment, refreshPaymentStatus } from './payments.js';
 import { checkStream } from '../../../packages/stream-monitor/index.js';
 import { autoSeedIfEmpty } from './autoseed.js';
+import { startR2Backups, r2UploadDb, r2Configured } from './persist-r2.js';
 
 seedPlans();
 
@@ -671,9 +672,19 @@ app.get('/v1/admin/users', auth, (req: any, res) => {
   res.json(rows);
 });
 
-// --- admin: backup / restore (a DB no Render Free é efémera e apaga a cada restart) ---
-// Os canais re-semeiam sozinhos no arranque; o backup serve para users,
-// favoritos, histórico, subscrições, pagamentos e níveis PREMIUM.
+// --- admin: backup / restore ---
+// Efemeridade do Render Free resolvida por snapshots R2 (restore automático no
+// arranque). O JSON de /backup continua para download manual; /backup/snapshot
+// força um snapshot imediato para o R2.
+// snapshot imediato para o R2 (o JSON de /backup continua para download manual)
+app.post('/v1/admin/backup/snapshot', auth, async (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  if (!r2Configured()) return res.status(400).json({ statusCode: 400, message: 'R2 sem configurar (env R2_*)' });
+  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* noop */ }
+  const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
+  const ok = await r2UploadDb(dbPath);
+  res.json({ ok, at: new Date().toISOString() });
+});
 const BACKUP_TABLES = ['users', 'user_preferences', 'channels', 'favorites', 'watch_history', 'user_channel_events', 'recommendations', 'subscriptions', 'plans', 'plan_channels', 'payments'];
 app.get('/v1/admin/backup', auth, (req: any, res) => {
   if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
@@ -779,6 +790,11 @@ app.post('/v1/admin/channels/:id/verify', auth, async (req: any, res) => {
 const PORT = Number(process.env.PORT || 3001);
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API on :${PORT}`);
+  // snapshots R2 (persistência no Render Free) + seed se a DB estiver vazia
+  try {
+    const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
+    startR2Backups(dbPath, () => db.exec('PRAGMA wal_checkpoint(TRUNCATE)'));
+  } catch (e: any) { console.log('[r2] arranque falhou:', e?.message); }
   // free tier sem Shell: semeia canais sozinho se a DB estiver vazia (não bloqueia o arranque)
   autoSeedIfEmpty().catch((e) => console.log('[seed] falhou', e?.message));
 });
