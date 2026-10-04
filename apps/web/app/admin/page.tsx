@@ -25,6 +25,7 @@ export default function Admin() {
   const [addQ, setAddQ] = useState('');
   const [addResults, setAddResults] = useState<any[]>([]);
   const [verifyMsg, setVerifyMsg] = useState('');
+  const [bulkMsg, setBulkMsg] = useState('');
 
   const loadPlans = async () => {
     const r = await authFetch(`${API}/admin/plans`);
@@ -89,6 +90,17 @@ export default function Admin() {
     const next = (c.access_level || 'FREE').toUpperCase() === 'PREMIUM' ? 'FREE' : 'PREMIUM';
     await authFetch(`${API}/admin/channels/${c.id}/access`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessLevel: next }) });
     setChannels((prev) => prev.map((x) => (x.id === c.id ? { ...x, access_level: next } : x)));
+  };
+
+  // bulk: mete TUDO num nível e depois escolhes à mão os FREE, um a um
+  const bulkAccess = async (level: 'FREE' | 'PREMIUM') => {
+    const label = level === 'PREMIUM' ? 'PREMIUM (só sub paga vê)' : 'FREE (todos veem)';
+    if (!window.confirm(`Meter TODOS os ${chTotal || '…'} canais em ${label}?`)) return;
+    setBulkMsg('a aplicar…');
+    const r = await authFetch(`${API}/admin/channels/access-bulk`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessLevel: level }) }).then((x) => x.json()).catch(() => null);
+    setBulkMsg(r?.ok ? `${r.updated} canais em ${r.accessLevel}. Agora escolhe os FREE um a um na tabela.` : 'falhou');
+    loadPlans();
+    loadChannels();
   };
 
   const loadChannels = async (page = chPage) => {
@@ -264,6 +276,11 @@ export default function Admin() {
 
         <section className="card reveal visible" style={{ padding: 24, marginBottom: 16, overflowX: 'auto' }}>
           <span className="section-label">[Canais — {chTotal} · FREE/PREMIUM]</span>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
+            <button onClick={() => bulkAccess('PREMIUM')} className="btn btn-primary btn-sm">Tudo PREMIUM</button>
+            <button onClick={() => bulkAccess('FREE')} className="btn btn-secondary btn-sm">Tudo FREE</button>
+            {bulkMsg && <span className="tnum" style={{ fontSize: 12, color: 'var(--accent)' }}>{bulkMsg}</span>}
+          </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
             <input value={chQ} onChange={(e) => { setChQ(e.target.value); setChPage(1); }} placeholder="pesquisar nome…" className="dl-input" style={{ flex: '2 1 180px' }} />
             <select value={chStatus} onChange={(e) => { setChStatus(e.target.value); setChPage(1); }} style={sel}>

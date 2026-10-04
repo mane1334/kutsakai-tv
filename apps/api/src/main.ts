@@ -624,6 +624,15 @@ app.post('/v1/admin/channels/:id/make-free', auth, (req: any, res) => {
   db.prepare(`UPDATE channels SET access_level='FREE' WHERE id=?`).run(req.params.id);
   res.json({ ok: true, accessLevel: 'FREE' });
 });
+// bulk: mete TODOS os canais em FREE ou PREMIUM de uma vez
+// (depois escolhes à mão os que ficam FREE, um a um na tabela)
+app.post('/v1/admin/channels/access-bulk', auth, (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  const level = String(req.body?.accessLevel || '').toUpperCase();
+  if (!['FREE', 'PREMIUM'].includes(level)) return res.status(400).json({ statusCode: 400, message: 'use FREE or PREMIUM' });
+  const r = db.prepare(`UPDATE channels SET access_level=?`).run(level);
+  res.json({ ok: true, accessLevel: level, updated: r.changes });
+});
 
 // verificação profunda de UM canal (prova o segmento; corrige falsos offline)
 app.post('/v1/admin/channels/:id/verify', auth, async (req: any, res) => {
