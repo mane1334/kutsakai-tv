@@ -1,7 +1,7 @@
 // Auto-seed para free tier sem Shell (ex. Render Free).
 // Se a tabela channels estiver vazia, importa as listas iptv-org em background
 // logo após o arranque. Desliga com AUTO_SEED=0.
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { db } from './db.js';
 import { parseM3U, dedupByUrl } from '../../../packages/m3u-parser/index.js';
 
@@ -37,6 +37,11 @@ function regionFromCountry(cc: string | null): string | null {
 
 let running = false;
 
+function channelId(streamUrl: string): string {
+  const h = createHash('sha256').update(streamUrl.trim()).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
 export async function autoSeedIfEmpty() {
   if (process.env.AUTO_SEED === '0') return;
   if (running) return;
@@ -60,12 +65,13 @@ export async function autoSeedIfEmpty() {
       const country = countryFromUrl(src);
       const region = regionFromCountry(country);
       const stmt = db.prepare(`INSERT INTO channels (id,name,logo,stream_url,country,region,languages,categories,status)
-        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(stream_url) DO UPDATE SET name=excluded.name, logo=excluded.logo, country=COALESCE(channels.country,excluded.country), region=COALESCE(channels.region,excluded.region)`);
+        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(stream_url) DO UPDATE SET id=excluded.id, name=excluded.name, logo=excluded.logo, country=COALESCE(channels.country,excluded.country), region=COALESCE(channels.region,excluded.region)`);
       let n = 0;
       for (const it of items) {
         const langs: string[] = src.includes('/languages/') ? [src.split('/').pop()!.replace('.m3u', '')] : [];
         const cats: string[] = src.includes('/categories/') ? [src.split('/').pop()!.replace('.m3u', '')] : ((it as any).groupTitle ? [(it as any).groupTitle] : []);
-        stmt.run(randomUUID(), (it as any).name, (it as any).logo || null, (it as any).url, country, region, JSON.stringify(langs), JSON.stringify(cats), 'unknown');
+        const streamUrl = String((it as any).url).trim();
+        stmt.run(channelId(streamUrl), (it as any).name, (it as any).logo || null, streamUrl, country, region, JSON.stringify(langs), JSON.stringify(cats), 'unknown');
         n++;
       }
       total += n;

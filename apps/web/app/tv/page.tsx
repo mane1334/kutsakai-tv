@@ -31,6 +31,13 @@ function parseT(s?: string): number | null {
   return isNaN(t) ? null : t;
 }
 
+function playableStreamUrl(raw: string): string {
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && raw.startsWith('http://')) {
+    return `https://${raw.slice('http://'.length)}`;
+  }
+  return raw;
+}
+
 export default function TV() {
   const router = useRouter();
   const [token, setToken] = useState('');
@@ -142,9 +149,10 @@ export default function TV() {
     setStreamLoading(true);
     setPlaying(false);
     let networkRetries = 0;
+    const streamUrl = playableStreamUrl(current.stream_url);
     const isHls = (() => {
-      try { return new URL(current.stream_url).pathname.toLowerCase().endsWith('.m3u8'); }
-      catch { return current.stream_url.toLowerCase().split(/[?#]/)[0].endsWith('.m3u8'); }
+      try { return new URL(streamUrl).pathname.toLowerCase().endsWith('.m3u8'); }
+      catch { return streamUrl.toLowerCase().split(/[?#]/)[0].endsWith('.m3u8'); }
     })();
     const onError = () => {
       if (!disposed) {
@@ -175,10 +183,10 @@ export default function TV() {
         }
       });
       hls.attachMedia(video);
-      hls.loadSource(current.stream_url);
+      hls.loadSource(streamUrl);
       video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
     } else {
-      video.src = current.stream_url;
+      video.src = streamUrl;
       video.load();
       video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
     }

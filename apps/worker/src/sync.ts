@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { parseM3U, dedupByUrl } from '../../../packages/m3u-parser/index.js';
 
@@ -26,6 +26,11 @@ const SOURCES = [
   'https://iptv-org.github.io/iptv/categories/movies.m3u',
   'https://iptv-org.github.io/iptv/categories/documentary.m3u',
 ];
+
+function channelId(streamUrl: string): string {
+  const h = createHash('sha256').update(streamUrl.trim()).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
 
 function countryFromUrl(src: string): string | null {
   const m = /countries\/([a-z]{2})\.m3u/.exec(src);
@@ -57,12 +62,13 @@ for (const src of SOURCES) {
     const country = countryFromUrl(src);
     const region = regionFromCountry(country);
     const stmt = db.prepare(`INSERT INTO channels (id,name,logo,stream_url,country,region,languages,categories,status)
-      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(stream_url) DO UPDATE SET name=excluded.name, logo=excluded.logo, country=COALESCE(channels.country,excluded.country), region=COALESCE(channels.region,excluded.region)`);
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(stream_url) DO UPDATE SET id=excluded.id, name=excluded.name, logo=excluded.logo, country=COALESCE(channels.country,excluded.country), region=COALESCE(channels.region,excluded.region)`);
     let n = 0;
     for (const it of items) {
       const langs: string[] = src.includes('/languages/') ? [src.split('/').pop()!.replace('.m3u', '')] : [];
       const cats: string[] = src.includes('/categories/') ? [src.split('/').pop()!.replace('.m3u', '')] : (it.groupTitle ? [it.groupTitle] : []);
-      stmt.run(randomUUID(), it.name, it.logo || null, it.url, country, region, JSON.stringify(langs), JSON.stringify(cats), 'unknown');
+      const streamUrl = it.url.trim();
+      stmt.run(channelId(streamUrl), it.name, it.logo || null, streamUrl, country, region, JSON.stringify(langs), JSON.stringify(cats), 'unknown');
       n++;
     }
     console.log(` -> ${n} canais`);
