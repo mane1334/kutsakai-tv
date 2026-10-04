@@ -56,16 +56,39 @@ const j = (s: string) => { try { return JSON.parse(s); } catch { return []; } };
 const isSecureStream = (url: unknown) => typeof url === 'string' && url.trim().toLowerCase().startsWith('https://');
 const isHttpStream = (url: unknown) => typeof url === 'string' && /^https?:\/\//i.test(url.trim());
 
-function relayUrl(req: any, channelId: string, sourceUrl: string): string {
+// Token curto, preso a UM canal: o hls.js e o <video> não enviam o header
+// Authorization nos pedidos de playlist/segmentos, por isso o relay PREMIUM
+// aceita este token na query (?st=) em vez do Bearer.
+const signStreamToken = (channelId: string) => jwt.sign({ k: 'stream', cid: channelId }, JWT_SECRET, { expiresIn: '6h' });
+function validStreamToken(t: unknown, channelId: string): boolean {
+  try { const p: any = jwt.verify(String(t || ''), JWT_SECRET); return p.k === 'stream' && p.cid === channelId; }
+  catch { return false; }
+}
+function viewerId(req: any): string | null {
+  if (req._vid !== undefined) return req._vid;
+  let id: string | null = null;
+  const h = req.headers.authorization;
+  if (h?.startsWith('Bearer ')) { try { id = (jwt.verify(h.slice(7), JWT_SECRET) as any).sub; } catch { /* expirado = anónimo */ } }
+  req._vid = id;
+  return id;
+}
+
+function relayUrl(req: any, channelId: string, sourceUrl: string, st?: string): string {
   const base = `${req.protocol}://${req.get('host')}`;
-  return `${base}/v1/channels/${encodeURIComponent(channelId)}/stream?url=${encodeURIComponent(sourceUrl)}`;
+  return `${base}/v1/channels/${encodeURIComponent(channelId)}/stream?url=${encodeURIComponent(sourceUrl)}${st ? `&st=${encodeURIComponent(st)}` : ''}`;
 }
 
 function publicChannel(req: any, c: any) {
   const stream = String(c.stream_url || '').trim();
+  let st: string | undefined;
+  if ((c.access_level || 'FREE').toUpperCase() === 'PREMIUM') {
+    const uid = viewerId(req);
+    const adm = uid ? (db.prepare('SELECT is_admin FROM users WHERE id=?').get(uid) as any)?.is_admin : 0;
+    if (uid && (adm || authorizeChannel(uid, c).authorized)) st = signStreamToken(c.id);
+  }
   return {
     ...c,
-    stream_url: isHttpStream(stream) && !isSecureStream(stream) ? relayUrl(req, c.id, stream) : stream,
+    stream_url: isHttpStream(stream) && !isSecureStream(stream) ? relayUrl(req, c.id, stream, st) : stream,
     languages: j(c.languages),
     categories: j(c.categories),
   };
@@ -249,8 +272,11 @@ app.get('/v1/channels', (req, res) => {
 app.get('/v1/channels/:id/stream', async (req: any, res) => {
   const c: any = db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.id);
   if (!c || !isHttpStream(c.stream_url)) return res.status(404).json({ statusCode: 404, message: 'stream not found' });
-  if ((c.access_level || 'FREE').toUpperCase() === 'PREMIUM' && !paidViewer(req))
+  const premium = (c.access_level || 'FREE').toUpperCase() === 'PREMIUM';
+  const hasToken = validStreamToken(req.query.st, c.id);
+  if (premium && !hasToken && !paidViewer(req))
     return res.status(403).json({ statusCode: 403, message: 'upgrade_required' });
+  const st = premium ? (hasToken ? String(req.query.st) : signStreamToken(c.id)) : undefined;
   const requested = String(req.query.url || '');
   let source: URL, original: URL;
   try {
@@ -279,7 +305,7 @@ app.get('/v1/channels/:id/stream', async (req: any, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (looksPlaylist) {
       let text = await upstream.text();
-      const rewrite = (raw: string) => relayUrl(req, c.id, new URL(raw, source).toString());
+      const rewrite = (raw: string) => relayUrl(req, c.id, new URL(raw, source).toString(), st);
       text = text.replace(/^(?!#)(\s*[^\s]+\s*)$/gm, (line) => rewrite(line.trim()));
       text = text.replace(/URI="([^"]+)"/g, (_m, raw) => `URI="${rewrite(raw)}"`);
       res.type('application/vnd.apple.mpegurl').send(text);
@@ -549,7 +575,8 @@ app.get('/v1/channels/:id/authorization', (req, res) => {
   let userId: string | null = null;
   const h = req.headers.authorization;
   if (h?.startsWith('Bearer ')) {
-    try { userId = (jwt.verify(h.slice(7), JWT_SECRET) as any).sub; } catch { /* token inválido = anónimo */ }
+    try { userId = (jwt.verify(h.slice(7), JWT_SECRET) as any).sub; }
+    catch { return res.status(401).json({ statusCode: 401, message: 'token expired' }); } // não tratar como anónimo: o cliente renova o token
   }
   const c: any = db.prepare('SELECT id,access_level FROM channels WHERE id=?').get(req.params.id);
   if (!c) return res.status(404).json({ statusCode: 404, message: 'not found' });
