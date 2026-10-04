@@ -12,6 +12,7 @@ RUN npm ci --omit=dev || npm install --omit=dev
 
 # código necessário para a API correr (main.ts importa db, payments e 2 packages)
 COPY apps/api ./apps/api
+COPY apps/worker ./apps/worker
 COPY packages ./packages
 
 RUN npm install -g tsx
