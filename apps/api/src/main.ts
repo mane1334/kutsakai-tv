@@ -220,6 +220,8 @@ function paidViewer(req: any): string | null {
   if (!h?.startsWith('Bearer ')) return null;
   try {
     const userId = (jwt.verify(h.slice(7), JWT_SECRET) as any).sub;
+    const admin: any = db.prepare('SELECT is_admin FROM users WHERE id=?').get(userId);
+    if (admin?.is_admin) return userId;
     const subs: any[] = db.prepare(`SELECT s.*, p.duration_days FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.user_id=? AND s.status='ACTIVE' AND (s.expires_at IS NULL OR s.expires_at > datetime('now'))`).all(userId);
     return subs.some((s) => (s.duration_days || 0) > 0) ? userId : null;
   } catch { return null; }
@@ -550,6 +552,8 @@ app.get('/v1/channels/:id/authorization', (req, res) => {
   }
   const c: any = db.prepare('SELECT id,access_level FROM channels WHERE id=?').get(req.params.id);
   if (!c) return res.status(404).json({ statusCode: 404, message: 'not found' });
+  if (userId && (db.prepare('SELECT is_admin FROM users WHERE id=?').get(userId) as any)?.is_admin)
+    return res.json({ authorized: true, reason: 'admin_preview' });
   res.json(authorizeChannel(userId, c));
 });
 
