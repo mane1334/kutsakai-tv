@@ -71,6 +71,7 @@ export async function autoSeedIfEmpty() {
         const langs: string[] = src.includes('/languages/') ? [src.split('/').pop()!.replace('.m3u', '')] : [];
         const cats: string[] = src.includes('/categories/') ? [src.split('/').pop()!.replace('.m3u', '')] : ((it as any).groupTitle ? [(it as any).groupTitle] : []);
         const streamUrl = String((it as any).url).trim();
+        if (!streamUrl.toLowerCase().startsWith('https://')) continue;
         stmt.run(channelId(streamUrl), (it as any).name, (it as any).logo || null, streamUrl, country, region, JSON.stringify(langs), JSON.stringify(cats), 'unknown');
         n++;
       }

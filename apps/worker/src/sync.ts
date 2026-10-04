@@ -68,6 +68,7 @@ for (const src of SOURCES) {
       const langs: string[] = src.includes('/languages/') ? [src.split('/').pop()!.replace('.m3u', '')] : [];
       const cats: string[] = src.includes('/categories/') ? [src.split('/').pop()!.replace('.m3u', '')] : (it.groupTitle ? [it.groupTitle] : []);
       const streamUrl = it.url.trim();
+      if (!streamUrl.toLowerCase().startsWith('https://')) continue;
       stmt.run(channelId(streamUrl), it.name, it.logo || null, streamUrl, country, region, JSON.stringify(langs), JSON.stringify(cats), 'unknown');
       n++;
     }

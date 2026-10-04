@@ -51,6 +51,7 @@ function auth(req: any, res: any, next: any) {
   } catch { return res.status(401).json({ statusCode: 401, message: 'token expired' }); }
 }
 const j = (s: string) => { try { return JSON.parse(s); } catch { return []; } };
+const isSecureStream = (url: unknown) => typeof url === 'string' && url.trim().toLowerCase().startsWith('https://');
 
 // bootstrap do 1º admin sem Shell: define ADMIN_EMAIL no Render;
 // a conta registada (ou login) com esse email fica is_admin=1 sozinha.
@@ -209,7 +210,7 @@ function paidViewer(req: any): string | null {
 app.get('/v1/channels', (req, res) => {
   const { q, country, language, category, region, status, page = '1', limit = '48' } = req.query as any;
   const viewer = paidViewer(req);
-  let rows: any[] = db.prepare('SELECT * FROM channels ORDER BY reliability_score DESC, name LIMIT 5000').all();
+  let rows: any[] = db.prepare("SELECT * FROM channels WHERE stream_url LIKE 'https://%' ORDER BY reliability_score DESC, name LIMIT 5000").all();
   if (!viewer) rows = rows.filter((c) => (c.access_level || 'FREE').toUpperCase() === 'FREE');
   if (status !== 'all') rows = rows.filter((c) => c.status !== 'offline');
   if (q) rows = rows.filter((c) => c.name.toLowerCase().includes(String(q).toLowerCase()));
@@ -226,6 +227,7 @@ app.get('/v1/channels', (req, res) => {
 app.get('/v1/channels/:id', (req, res) => {
   const c: any = db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.id);
   if (!c) return res.status(404).json({ statusCode: 404, message: 'not found' });
+  if (!isSecureStream(c.stream_url)) return res.status(410).json({ statusCode: 410, message: 'stream inseguro: apenas HTTPS é suportado no site online' });
   if ((c.access_level || 'FREE').toUpperCase() === 'PREMIUM' && !paidViewer(req)) {
     const { stream_url, ...rest } = c;
     return res.status(403).json({ ...rest, languages: j(c.languages), categories: j(c.categories), authorized: false, reason: 'upgrade_required' });
@@ -238,7 +240,7 @@ app.get('/v1/channels/:id/related', (req, res) => {
   if (!c) return res.status(404).json({ statusCode: 404, message: 'not found' });
   const cats = j(c.categories), langs = j(c.languages);
   const viewer = paidViewer(req);
-  let rows: any[] = db.prepare('SELECT * FROM channels WHERE id != ? AND status != ? LIMIT 500').all(c.id, 'offline');
+  let rows: any[] = db.prepare("SELECT * FROM channels WHERE id != ? AND status != ? AND stream_url LIKE 'https://%' LIMIT 500").all(c.id, 'offline');
   if (!viewer) rows = rows.filter((r) => (r.access_level || 'FREE').toUpperCase() === 'FREE');
   const scored = rows.map((r) => {
     const rc = j(r.categories), rl = j(r.languages);
@@ -298,7 +300,7 @@ app.get('/v1/me/recommendations', auth, (req: any, res) => {
   const maxP = Math.max(1, ...pop.map((p) => p.n));
   const popMap = new Map(pop.map((p) => [p.channel_id, Math.log1p(p.n) / Math.log1p(maxP)]));
   const isPaid = db.prepare(`SELECT COUNT(*) n FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.user_id=? AND s.status='ACTIVE' AND (s.expires_at IS NULL OR s.expires_at > datetime('now')) AND (p.duration_days || 0) > 0`).get(req.userId) as any;
-  const chans: any[] = db.prepare(`SELECT * FROM channels WHERE status != 'offline' LIMIT 2000`).all();
+  const chans: any[] = db.prepare("SELECT * FROM channels WHERE status != 'offline' AND stream_url LIKE 'https://%' LIMIT 2000").all();
   const visible = isPaid.n ? chans : chans.filter((c) => (c.access_level || 'FREE').toUpperCase() === 'FREE');
   const scored = visible.map((c) => {
     const cl = j(c.languages).map((x: string) => String(x).toLowerCase());
