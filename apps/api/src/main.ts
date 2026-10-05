@@ -363,7 +363,16 @@ app.get('/v1/channels/:id/stream', async (req: any, res) => {
   try {
     const headers: Record<string, string> = { 'User-Agent': 'KutsakaiTV/1.0' };
     if (req.headers.range) headers.Range = String(req.headers.range);
-    let upstream = await fetch(source, { headers, redirect: 'manual' });
+    // Timeout por tentativa: fonte pendurada não pode pendurar o pedido até
+    // ao 502 do proxy (com 2 aparelhos a ver, um upstream lento se nota).
+    const withTimeout = () => {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 15000);
+      return { signal: ctrl.signal, done: () => clearTimeout(to) };
+    };
+    let t = withTimeout();
+    let upstream = await fetch(source, { headers, redirect: 'manual', signal: t.signal } as any);
+    t.done();
     for (let i = 0; i < 3 && upstream.status >= 300 && upstream.status < 400; i++) {
       const location = upstream.headers.get('location');
       if (!location) break;
@@ -371,7 +380,9 @@ app.get('/v1/channels/:id/stream', async (req: any, res) => {
       if (!['http:', 'https:'].includes(next.protocol) || next.hostname !== original.hostname)
         return res.status(403).json({ statusCode: 403, message: 'redirect host not allowed' });
       source = next;
-      upstream = await fetch(source, { headers, redirect: 'manual' });
+      t = withTimeout();
+      upstream = await fetch(source, { headers, redirect: 'manual', signal: t.signal } as any);
+      t.done();
     }
     if (!upstream.ok || !upstream.body) return res.status(upstream.status || 502).end();
     const contentType = upstream.headers.get('content-type') || '';
@@ -391,10 +402,15 @@ app.get('/v1/channels/:id/stream', async (req: any, res) => {
       const range = upstream.headers.get('content-range');
       if (range) res.setHeader('Content-Range', range);
       res.status(upstream.status);
-      Readable.fromWeb(upstream.body as any).pipe(res);
+      // Se o cliente desligar (zap/troca de canal), destrói o pipe para não
+      // deixar bytes pendurados a consumir a instância.
+      const out = Readable.fromWeb(upstream.body as any);
+      req.on('close', () => { try { out.destroy(); } catch { /* noop */ } });
+      out.pipe(res);
     }
   } catch (e: any) {
-    res.status(502).json({ statusCode: 502, message: String(e?.message || 'upstream unavailable').slice(0, 160) });
+    const aborted = String(e?.name || '').includes('Abort') || String(e?.message || '').includes('aborted');
+    res.status(aborted ? 504 : 502).json({ statusCode: aborted ? 504 : 502, message: aborted ? 'upstream timeout' : String(e?.message || 'upstream unavailable').slice(0, 160) });
   }
 });
 
