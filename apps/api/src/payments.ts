@@ -126,6 +126,17 @@ const SEED_PLANS = [
 ];
 
 export function seedPlans() {
+  // arranque rápido: se os 4 planos já existem e há links, não há nada a
+  // fazer (o admin gere o resto no painel). Sem isto, os UPDATEs full-scan +
+  // INSERT...SELECT corriam a cada boot e bloqueavam o event loop (API
+  // síncrona) — pedidos pendentes rebentavam em 502 no proxy.
+  try {
+    const have: any = db.prepare(`SELECT COUNT(*) n FROM plans WHERE code IN ('free','daily','weekly','monthly')`).get();
+    if (Number(have?.n) === 4) {
+      const links: any = db.prepare(`SELECT COUNT(*) n FROM plan_channels`).get();
+      if (Number(links?.n) > 0) return;
+    }
+  } catch { /* segue para seed completo */ }
   const ins = db.prepare(`INSERT INTO plans (id,code,name,price,currency,duration_days,max_devices,max_quality,features) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(code) DO NOTHING`);
   for (const p of SEED_PLANS) ins.run(randomUUID(), p.code, p.name, p.price, p.currency, p.duration_days, p.max_devices, p.max_quality, JSON.stringify(p.features));
   // amostra PREMIUM para testar o gate (só onde ainda é FREE)

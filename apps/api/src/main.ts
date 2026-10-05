@@ -447,9 +447,16 @@ app.delete('/v1/me/favorites/:channelId', auth, (req: any, res) => {
 
 app.post('/v1/me/history', auth, (req: any, res) => {
   const { channelId, durationSec = 0, dataConsumedMB = 0 } = req.body;
-  db.prepare('INSERT INTO watch_history (id,user_id,channel_id,duration_sec,data_consumed_mb) VALUES (?,?,?,?,?)')
-    .run(randomUUID(), req.userId, channelId, durationSec, dataConsumedMB);
-  res.json({ ok: true });
+  // telemetria best-effort: nunca prender o player por causa disto.
+  // Se a escrita falhar (réplica ocupada no sync, rede), 503 JSON em vez
+  // de deixar o pedido pendurado até o proxy dar 502 sem headers CORS.
+  try {
+    db.prepare('INSERT INTO watch_history (id,user_id,channel_id,duration_sec,data_consumed_mb) VALUES (?,?,?,?,?)')
+      .run(randomUUID(), req.userId, channelId, durationSec, dataConsumedMB);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(503).json({ statusCode: 503, message: 'telemetry unavailable' });
+  }
 });
 app.get('/v1/me/history', auth, (req: any, res) => {
   const rows = db.prepare(`SELECT h.*, c.name, c.logo FROM watch_history h JOIN channels c ON c.id=h.channel_id WHERE h.user_id=? ORDER BY h.started_at DESC LIMIT 100`).all(req.userId);
@@ -460,9 +467,13 @@ app.post('/v1/me/events', auth, (req: any, res) => {
   const { channelId, type } = req.body;
   const w = (EVENT_WEIGHTS as any)[type];
   if (w === undefined) return res.status(400).json({ statusCode: 400, message: 'unknown event type' });
-  db.prepare('INSERT INTO user_channel_events (id,user_id,channel_id,type,weight) VALUES (?,?,?,?,?)')
-    .run(randomUUID(), req.userId, channelId, type, w);
-  res.json({ ok: true });
+  try {
+    db.prepare('INSERT INTO user_channel_events (id,user_id,channel_id,type,weight) VALUES (?,?,?,?,?)')
+      .run(randomUUID(), req.userId, channelId, type, w);
+    res.json({ ok: true });
+  } catch {
+    res.status(503).json({ statusCode: 503, message: 'telemetry unavailable' });
+  }
 });
 
 // --- recommendations ---
