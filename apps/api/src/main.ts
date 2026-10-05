@@ -82,6 +82,10 @@ function rateLimit(max: number, windowMs: number, keyFn: (req: any) => string) {
 const ipOf = (req: any) => String(req.ip || req.socket?.remoteAddress || 'unknown');
 const loginLimit = rateLimit(10, 15 * 60 * 1000, (req) =>
   `login:${ipOf(req)}:${String(req.body?.email || '').trim().toLowerCase()}`);
+// Backstop por conta: mesmo rodando IPs, 30 tentativas/15min por e-mail.
+// (IPs móveis/CGNAT mudam a cada pedido e anulavam o limite por IP.)
+const loginAcctLimit = rateLimit(30, 15 * 60 * 1000, (req) =>
+  `loginacct:${String(req.body?.email || '').trim().toLowerCase()}`);
 const registerLimit = rateLimit(20, 60 * 60 * 1000, (req) => `register:${ipOf(req)}`);
 const refreshLimit = rateLimit(60, 15 * 60 * 1000, (req) => `refresh:${ipOf(req)}`);
 
@@ -212,7 +216,7 @@ app.post('/v1/auth/register', registerLimit, async (req, res) => {
   res.json({ accessToken: signAccess(id), user: { id, name, email } });
 });
 
-app.post('/v1/auth/login', loginLimit, async (req, res) => {
+app.post('/v1/auth/login', loginLimit, loginAcctLimit, async (req, res) => {
   const { email, password } = req.body;
   const u: any = db.prepare('SELECT * FROM users WHERE email=?').get(email);
   if (!u || !(await bcrypt.compare(password, (u as any).password_hash)))
