@@ -52,6 +52,11 @@ export default function TV() {
   const [muted, setMuted] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [streamLoading, setStreamLoading] = useState(false);
+  // Só-áudio: o elemento está a tocar (currentTime avança) mas nunca apareceu
+  // pista de vídeo (videoWidth === 0). Típico de falha de decode/remux no
+  // hls.js ou de fonte que deixou de emitir vídeo.
+  const [audioOnly, setAudioOnly] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
   const [q, setQ] = useState('');
   const [gate, setGate] = useState<string | null>(null);
   const [paid, setPaid] = useState(false);
@@ -71,6 +76,10 @@ export default function TV() {
   const infoTimer = useRef<any>(null);
 
   const current = list[idx] || null;
+  // Codecs que nenhum browser decodifica via MSE/hls.js (ex. MPEG-2 de
+  // restreams antigos): o áudio toca mas o vídeo nunca vai aparecer.
+  // Nesses casos o retry não adianta — o caminho é o VLC.
+  const incompatibleVideo = !!current && ['mpeg1video', 'mpeg2video'].includes(String((current as any).codec || '').toLowerCase());
   const auth = () => (token ? { Authorization: `Bearer ${token}` } : {});
   const [tokenReady, setTokenReady] = useState(false);
 
@@ -159,9 +168,23 @@ export default function TV() {
     let hls: any = null;
     let disposed = false;
     setStreamError(null);
+    setAudioOnly(false);
     setStreamLoading(true);
     setPlaying(false);
     let networkRetries = 0;
+    let mediaFailures = 0;
+    let audioOnlyTimer: any = null;
+    const armAudioOnlyCheck = (ms: number) => {
+      clearTimeout(audioOnlyTimer);
+      audioOnlyTimer = setTimeout(() => {
+        if (disposed) return;
+        try {
+          // a tocar, tempo a avançar, mas sem dimensões de vídeo = só áudio
+          if (!video.paused && !video.ended && video.currentTime > 1 && video.videoWidth === 0)
+            setAudioOnly(true);
+        } catch { /* noop */ }
+      }, ms);
+    };
     const streamUrl = playableStreamUrl(current.stream_url);
     const isHls = (() => {
       try { return new URL(streamUrl).pathname.toLowerCase().endsWith('.m3u8'); }
@@ -174,7 +197,7 @@ export default function TV() {
       }
     };
     const onLoaded = () => { if (!disposed) setStreamLoading(false); };
-    const onPlay = () => setPlaying(true);
+    const onPlay = () => { setPlaying(true); armAudioOnlyCheck(5000); };
     const onPause = () => {
       setPlaying(false);
       const sec = Math.round((Date.now() - startRef.current) / 1000);
@@ -203,19 +226,36 @@ export default function TV() {
           });
         } catch { hls = null; }
         if (hls) {
+          const nativeFallback = () => {
+            // Último recurso: largar o remux do hls.js e deixar o <video>
+            // nativo (Safari/TV) tentar direto. Se falhar, mostra o erro.
+            try { hls?.destroy(); } catch { /* noop */ }
+            hls = null;
+            if (disposed) return;
+            try {
+              video.src = streamUrl;
+              video.load();
+              video.play().catch(() => { /* autoplay pode exigir clique */ });
+            } catch { onError(); }
+          };
           hls.on(HlsLib.Events.ERROR, (_event: string, data: any) => {
             if (data?.fatal) {
               if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
                 networkRetries += 1;
                 hls.startLoad();
               }
-              else if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+              else if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR && mediaFailures < 1) {
+                mediaFailures += 1;
+                try { hls.recoverMediaError(); } catch { nativeFallback(); }
+              }
+              else if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR) nativeFallback();
               else onError();
             }
           });
           hls.attachMedia(video);
           hls.loadSource(streamUrl);
           video.play().catch(() => { /* autoplay pode exigir clique; os controlos continuam disponíveis */ });
+          armAudioOnlyCheck(8000);
           return;
         }
       }
@@ -227,6 +267,7 @@ export default function TV() {
     })();
     return () => {
       disposed = true;
+      clearTimeout(audioOnlyTimer);
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('error', onError);
@@ -236,7 +277,7 @@ export default function TV() {
       video.removeAttribute('src');
       video.load();
     };
-  }, [current?.id, current?.stream_url, gate]);
+  }, [current?.id, current?.stream_url, gate, retryNonce]);
 
   const zap = useCallback((dir: 1 | -1) => {
     setList((l) => { setIdx((i) => (i + dir + l.length) % Math.max(l.length, 1)); return l; });
@@ -380,6 +421,32 @@ export default function TV() {
                   <video ref={videoRef} controls playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
                   {streamLoading && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.42)', color: 'var(--text-body)', fontSize: 13 }}>a ligar ao sinal…</div>}
                   {streamError && <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center', justifyContent: 'center', padding: 24, background: 'rgba(0,0,0,0.72)', color: 'var(--text-body)', fontSize: 13, textAlign: 'center' }}><span>{streamError}</span><button onClick={() => setStreamError(null)} className="btn btn-secondary btn-sm">Fechar aviso</button></div>}
+                  {audioOnly && !streamError && !incompatibleVideo && (
+                    <div style={{ position: 'absolute', left: 12, right: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 14px', background: 'rgba(0,0,0,0.78)', border: '1px solid var(--border-subtle)', borderRadius: 12, color: 'var(--text-body)', fontSize: 12.5 }}>
+                      <span>Esta fonte está a sair só com áudio neste aparelho (o vídeo não arrancou).</span>
+                      <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button
+                          onClick={() => { setAudioOnly(false); setStreamError(null); setRetryNonce((n) => n + 1); }}
+                          className="btn btn-secondary btn-sm"
+                        >Tentar de novo</button>
+                        <button
+                          onClick={() => { try { window.open(playableStreamUrl(current.stream_url), '_blank'); } catch { /* noop */ } }}
+                          className="btn btn-secondary btn-sm"
+                        >Abrir noutro player (VLC)</button>
+                      </span>
+                    </div>
+                  )}
+                  {incompatibleVideo && !streamError && (
+                    <div style={{ position: 'absolute', left: 12, right: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 14px', background: 'rgba(0,0,0,0.78)', border: '1px solid var(--border-subtle)', borderRadius: 12, color: 'var(--text-body)', fontSize: 12.5 }}>
+                      <span>Esta fonte usa vídeo {String((current as any).codec).toUpperCase()}, que os browsers não conseguem mostrar — por isso só se ouve o áudio.</span>
+                      <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button
+                          onClick={() => { try { window.open(playableStreamUrl(current.stream_url), '_blank'); } catch { /* noop */ } }}
+                          className="btn btn-secondary btn-sm"
+                        >Abrir no VLC</button>
+                      </span>
+                    </div>
+                  )}
                 </>
                 : <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)' }}>a sintonizar…</div>}
               {current && showInfo && (

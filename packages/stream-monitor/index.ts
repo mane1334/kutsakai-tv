@@ -39,6 +39,131 @@ function resolveUrl(base: string, ref: string): string | null {
   try { return new URL(r, base).toString(); } catch { return null; }
 }
 
+export interface CodecProbe {
+  videoCodec: string | null; // 'avc' | 'hevc' | 'mpeg2video' | 'mpeg1video' | null
+  audioCodec: string | null; // 'aac' | 'mp3' | 'ac3' | null
+}
+
+// Tipos de stream MPEG-TS (PAT/PMT) → nomes curtos. Só o vídeo interessa
+// para compatibilidade: browsers (MSE/hls.js) só decodificam avc/hevc.
+const TS_VIDEO: Record<number, string> = { 0x01: 'mpeg1video', 0x02: 'mpeg2video', 0x1b: 'avc', 0x24: 'hevc' };
+const TS_AUDIO: Record<number, string> = { 0x03: 'mp3', 0x04: 'mp3', 0x0f: 'aac', 0x11: 'aac', 0x81: 'ac3', 0x87: 'eac3' };
+
+function parsePmtTypes(seg: Uint8Array): { video: number[]; audio: number[] } {
+  const PKT = 188;
+  const n = Math.floor(seg.length / PKT);
+  let pmtPid = -1;
+  for (let i = 0; i < n && pmtPid < 0; i++) {
+    const o = i * PKT;
+    if (seg[o] !== 0x47) continue;
+    if ((((seg[o + 1] & 0x1f) << 8) | seg[o + 2]) !== 0) continue;
+    try {
+      const pbf = seg[o + 3] & 0x20 ? seg[o + 4] + 1 : 0;
+      const s = o + 4 + pbf + 1;
+      const secLen = ((seg[s + 1] & 0x0f) << 8) | seg[s + 2];
+      const nprog = Math.floor((secLen - 9) / 4);
+      const last = s + 8 + (nprog - 1) * 4;
+      pmtPid = ((seg[last + 2] & 0x1f) << 8) | seg[last + 3];
+    } catch { /* pacote parcial */ }
+  }
+  const out = { video: [] as number[], audio: [] as number[] };
+  if (pmtPid < 0) return out;
+  for (let i = 0; i < n; i++) {
+    const o = i * PKT;
+    if (seg[o] !== 0x47) continue;
+    if ((((seg[o + 1] & 0x1f) << 8) | seg[o + 2]) !== pmtPid) continue;
+    try {
+      const pbf = seg[o + 3] & 0x20 ? seg[o + 4] + 1 : 0;
+      const s = o + 4 + pbf + 1;
+      const secLen = ((seg[s + 1] & 0x0f) << 8) | seg[s + 2];
+      const progLen = ((seg[s + 10] & 0x0f) << 8) | seg[s + 11];
+      let p = s + 12 + progLen;
+      const end = s + 3 + secLen - 4;
+      while (p + 4 < end && p + 4 < seg.length) {
+        const st = seg[p];
+        const il = ((seg[p + 3] & 0x03) << 8) | seg[p + 4];
+        if (TS_VIDEO[st]) out.video.push(st);
+        if (TS_AUDIO[st]) out.audio.push(st);
+        p += 5 + il;
+      }
+      break;
+    } catch { break; }
+  }
+  return out;
+}
+
+async function readBytes(res: Response, maxBytes = 262144): Promise<Uint8Array> {
+  const reader = res.body?.getReader();
+  if (!reader) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) { chunks.push(value); total += value.length; }
+      if (total >= maxBytes) break;
+    }
+  } finally {
+    try { await reader.cancel(); } catch { /* noop */ }
+  }
+  const out = new Uint8Array(Math.min(total, maxBytes));
+  let off = 0;
+  for (const c of chunks) {
+    const n = Math.min(c.length, out.length - off);
+    out.set(c.subarray(0, n), off);
+    off += n;
+    if (off >= out.length) break;
+  }
+  return out;
+}
+
+// Sonda leve de codecs: playlist → 1º segmento (~256KB) → tipos da PMT.
+// Devolve nulls quando não dá para determinar (playlist variante cifrada,
+// segmento inacessível, etc.) — nunca lança.
+export async function probeCodecs(url: string, budgetMs = 12000): Promise<CodecProbe> {
+  const none: CodecProbe = { videoCodec: null, audioCodec: null };
+  const t0 = Date.now();
+  const remain = () => Math.max(2000, budgetMs - (Date.now() - t0));
+  try {
+    const g = timeoutSignal(remain());
+    const res = await fetch(url, { signal: g.signal, redirect: 'follow', headers: { 'User-Agent': 'KutsakaiTV/1.0' } } as any);
+    if (!res.ok) { g.done(); return none; }
+    const head = await readFirstChunk(res);
+    g.done();
+    let playlistUrl = url;
+    let first = firstMediaUri(url, head, false);
+    if (first === 'VARIANT') {
+      const g2 = timeoutSignal(remain());
+      const vr = await fetch(url, { signal: g2.signal, redirect: 'follow', headers: { 'User-Agent': 'KutsakaiTV/1.0' } } as any);
+      const vtext = await readFirstChunk(vr);
+      g2.done();
+      first = firstMediaUri(url, vtext, true);
+      if (first && first.toLowerCase().split(/[?#]/)[0].endsWith('.m3u8')) {
+        playlistUrl = first;
+        const g3 = timeoutSignal(remain());
+        const pr = await fetch(first, { signal: g3.signal, redirect: 'follow', headers: { 'User-Agent': 'KutsakaiTV/1.0' } } as any);
+        const ptext = await readFirstChunk(pr);
+        g3.done();
+        void playlistUrl;
+        first = firstMediaUri(first, ptext, true);
+      }
+    }
+    if (!first || first === 'VARIANT') return none;
+    const g4 = timeoutSignal(remain());
+    const seg = await fetch(first, { signal: g4.signal, redirect: 'follow', headers: { 'User-Agent': 'KutsakaiTV/1.0' } } as any);
+    if (!seg.ok) { g4.done(); return none; }
+    const bytes = await readBytes(seg);
+    g4.done();
+    if (bytes.length < 188 * 8) return none;
+    const types = parsePmtTypes(bytes);
+    return {
+      videoCodec: types.video.length ? (TS_VIDEO[types.video[0]] || null) : null,
+      audioCodec: types.audio.length ? (TS_AUDIO[types.audio[0]] || null) : null,
+    };
+  } catch { return none; }
+}
+
 function firstMediaUri(playlistUrl: string, text: string, variantPass: boolean): string | null {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   if (!variantPass && lines.some((l) => l.startsWith('#EXT-X-STREAM-INF'))) return 'VARIANT';

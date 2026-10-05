@@ -1,24 +1,31 @@
-// apps/api/src/db.ts — SQLite local + snapshots no R2 (persistência free).
-// O disco do Render Free é efémero: a cada restart a data.db some.
-// Em vez de migrar para Turso/Neon (que obrigaria reescrever TODOS os
-// db.prepare para async), o ficheiro .db faz snapshot para o Cloudflare R2:
-// restore no arranque (só se o disco estiver vazio) + upload periódico.
-// Sem env R2_* configurado, comporta-se como antes (dev local não muda).
-import { DatabaseSync } from 'node:sqlite';
+// apps/api/src/db.ts — SQLite local OU réplica embebida Turso (libsql, API síncrona).
+// Sem TURSO_DATABASE_URL: comporta-se como antes (node:sqlite local + snapshot R2).
+// Com TURSO_DATABASE_URL + TURSO_AUTH_TOKEN: réplica embebida:
+//   - leituras: ficheiro local (microssegundos)
+//   - escritas: vão ao primário na cloud e refletem local (readYourWrites)
+//   - pull periódico + sync() inicial obrigatório (ficheiro vazio não sincroniza sozinho)
+// Zero reescrita: mantém db.prepare().get/run/all + db.exec em todo o lado.
 import path from 'node:path';
 import fs from 'node:fs';
 import { r2Configured, r2DownloadDb } from './persist-r2.js';
 
+const TURSO_URL =
+  process.env.TURSO_DATABASE_URL || process.env.TURSO_SYNC_URL || process.env.LIBSQL_URL || '';
+const TURSO_TOKEN =
+  process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN || '';
+const SYNC_PERIOD_SEC = Math.max(10, Number(process.env.TURSO_SYNC_INTERVAL || 60));
+
+export const isTurso = () => !!(TURSO_URL && TURSO_TOKEN);
+
 const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
 
-// garante que a pasta existe (ex. /data no Docker/Fly)
+// garante que a pasta existe (ex. /data no Docker/Fly, /tmp no Render)
 try {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 } catch { /* noop */ }
 
-// disco vazio (restart no Render) + R2 configurado → repõe o snapshot.
-// Nunca toca num ficheiro local existente (dev local está a salvo).
-if (!fs.existsSync(dbPath) && r2Configured()) {
+// R2 snapshot só faz sentido no modo local. Com Turso a cloud É a persistência.
+if (!isTurso() && !fs.existsSync(dbPath) && r2Configured()) {
   console.log('[db] disco vazio, a repor snapshot do R2…');
   const snap = await r2DownloadDb();
   if (snap) {
@@ -29,9 +36,77 @@ if (!fs.existsSync(dbPath) && r2Configured()) {
   }
 }
 
-export const db = new DatabaseSync(dbPath);
+// --- abre a DB (mesma API síncrona nos dois modos) ---
+let _db: any;
+if (isTurso()) {
+  // import dinâmico para não partir dev local sem o binário nativo
+  const { default: LibsqlDatabase } = await import('libsql');
+  console.log(`[db] modo TURSO réplica embebida: file=${dbPath} sync=${TURSO_URL.replace(/:\/\/.*@/, '://***@')}`);
+  const openReplica = () => new LibsqlDatabase(dbPath, {
+    syncUrl: TURSO_URL,
+    authToken: TURSO_TOKEN,
+    syncInterval: SYNC_PERIOD_SEC,
+    readYourWrites: true,
+    offline: false,
+  } as any);
+  try {
+    _db = openReplica();
+  } catch (e: any) {
+    // ficheiro .db local anterior (sqlite puro) não tem metadados de sync:
+    // guarda backup e recomeça a réplica do zero (a cloud é a fonte da verdade
+    // após o push inicial; o backup fica em <path>.pre-turso.bak).
+    if (String(e?.message || e).includes('InvalidLocalState') || String(e?.message || e).includes('metadata file does not')) {
+      const bak = `${dbPath}.pre-turso.bak`;
+      try { fs.renameSync(dbPath, bak); console.log(`[db] ficheiro local sem metadados Turso → backup em ${bak}`); } catch {}
+      try { fs.rmSync(`${dbPath}-shm`, { force: true }); fs.rmSync(`${dbPath}-wal`, { force: true }); } catch {}
+      _db = openReplica();
+    } else throw e;
+  }
+  // 1º sync OBRIGATÓRIO: ficheiro vazio nunca faz pull sozinho.
+  // Sem isto: registo ok (vai ao primário) mas arranque limpo parece vazio.
+  try {
+    _db.sync();
+    console.log('[db] sync inicial Turso ok');
+  } catch (e: any) {
+    console.warn('[db] sync inicial falhou (segue com réplica local):', e?.message || e);
+  }
+  // pull periódico para apanhar escritas de outras instâncias (pagamentos aprovados, etc.)
+  const iv = setInterval(() => {
+    try { _db.sync(); } catch (e: any) {
+      console.warn('[db] sync periódico falhou:', e?.message || e);
+    }
+  }, SYNC_PERIOD_SEC * 1000);
+  (iv as any).unref?.();
+} else {
+  const { DatabaseSync } = await import('node:sqlite');
+  if (!TURSO_URL && process.env.NODE_ENV === 'production') {
+    console.log('[db] modo local (sem TURSO_* — define TURSO_DATABASE_URL + TURSO_AUTH_TOKEN para persistência real)');
+  }
+  _db = new DatabaseSync(dbPath);
+}
+
+export const db = _db as {
+  prepare(sql: string): { get(...p: any[]): any; all(...p: any[]): any[]; run(...p: any[]): { changes: number | bigint }; };
+  exec(sql: string): void;
+  close(): void;
+};
+
+/** Força um pull/push imediato. No modo local é no-op. */
+export function syncNow(label = 'manual') {
+  if (!isTurso()) return;
+  try {
+    (_db as any).sync();
+  } catch (e: any) {
+    console.warn(`[db] sync(${label}) falhou:`, e?.message || e);
+  }
+}
+
 // concorrência: WAL + espera em vez de "database is locked"
-db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;`);
+try {
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;`);
+} catch (e: any) {
+  console.warn('[db] pragma falhou:', e?.message);
+}
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -95,9 +170,12 @@ for (const sql of [
   try { db.exec(sql); } catch { /* coluna já existe */ }
 }
 
-if (process.env.NODE_ENV === 'production' && !process.env.SQLITE_PATH) {
+// DDL vai ao primário; faz sync para a réplica refletir de imediato.
+if (isTurso()) syncNow('ddl');
+
+if (process.env.NODE_ENV === 'production' && !isTurso() && !process.env.SQLITE_PATH) {
   console.warn('[db] SQLITE_PATH não definido em produção — a usar ./data.db (efémero no Render Free; o snapshot R2 repõe no arranque). Define SQLITE_PATH=/data/data.db com disco, se um dia tiveres volume.');
 }
-if (process.env.NODE_ENV === 'production' && !r2Configured()) {
-  console.warn('[db] R2_* sem configurar — SEM persistência: cada restart perde users/pagamentos. Cria o bucket e define as envs (ver DEPLOY.md).');
+if (process.env.NODE_ENV === 'production' && !isTurso() && !r2Configured()) {
+  console.warn('[db] R2_* sem configurar e sem Turso — SEM persistência: cada restart perde users/pagamentos. Define TURSO_* (recomendado) ou R2_* (ver DEPLOY.md).');
 }

@@ -3,10 +3,10 @@ import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
-import { db } from './db.js';
+import { db, isTurso, syncNow } from './db.js';
 import { scoreChannel, EVENT_WEIGHTS } from '../../../packages/recommendation-engine/index.js';
 import { providers, seedPlans, getPlan, getPaymentMethods, hasActiveSubscription, authorizeChannel, completePayment, refreshPaymentStatus } from './payments.js';
-import { checkStream } from '../../../packages/stream-monitor/index.js';
+import { checkStream, probeCodecs } from '../../../packages/stream-monitor/index.js';
 import { autoSeedIfEmpty } from './autoseed.js';
 import { startR2Backups, r2UploadDb, r2Configured } from './persist-r2.js';
 
@@ -811,21 +811,35 @@ app.post('/v1/admin/channels/:id/verify', auth, async (req: any, res) => {
   const c: any = db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.id);
   if (!c) return res.status(404).json({ statusCode: 404, message: 'not found' });
   const r = await checkStream(c.stream_url);
+  // sonda de codecs (melhor esforço, ~256KB do 1º segmento): grava o codec de
+  // vídeo para o frontend avisar quando a fonte é incompatível com browsers
+  // (ex. mpeg2video → áudio no browser, vídeo só no VLC).
+  let videoCodec: string | null = null;
+  try {
+    const probe = await probeCodecs(c.stream_url);
+    videoCodec = probe.videoCodec;
+    if (videoCodec) db.prepare(`UPDATE channels SET codec=? WHERE id=?`).run(videoCodec, c.id);
+  } catch { /* sonda é opcional */ }
   db.prepare(`INSERT INTO stream_checks (id,channel_id,status,latency_ms,error) VALUES (?,?,?,?,?)`)
     .run(randomUUID(), c.id, r.status, r.latencyMs || null, r.error || null);
   const week: any = db.prepare(`SELECT COUNT(*) t, SUM(CASE WHEN status='online' THEN 1 ELSE 0 END) o FROM stream_checks WHERE channel_id=? AND checked_at > datetime('now','-7 days')`).get(c.id) as any;
   const rel = week?.t ? (100 * (week.o || 0)) / week.t : (r.status === 'online' ? 100 : 0);
   db.prepare(`UPDATE channels SET status=?, reliability_score=?, last_checked=datetime('now') WHERE id=?`).run(r.status, rel, c.id);
-  res.json({ status: r.status, latencyMs: r.latencyMs || null, provedBySegment: !!r.provedBySegment, error: r.error || null, reliability: Math.round(rel) });
+  res.json({ status: r.status, latencyMs: r.latencyMs || null, provedBySegment: !!r.provedBySegment, error: r.error || null, reliability: Math.round(rel), videoCodec });
 });
 
 const PORT = Number(process.env.PORT || 3001);
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API on :${PORT}`);
-  // snapshots R2 (persistência no Render Free) + seed se a DB estiver vazia
+  // Turso = persistência real: sem snapshots R2, sem checkpoint WAL manual.
+  // Modo local: snapshots R2 (persistência no Render Free) + seed se a DB estiver vazia
   try {
-    const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
-    startR2Backups(dbPath, () => db.exec('PRAGMA wal_checkpoint(TRUNCATE)'));
+    if (isTurso()) {
+      console.log('[r2] modo Turso — snapshots R2 desativados (a cloud é a persistência)');
+    } else {
+      const dbPath = process.env.SQLITE_PATH || path.join(process.cwd(), 'data.db');
+      startR2Backups(dbPath, () => db.exec('PRAGMA wal_checkpoint(TRUNCATE)'));
+    }
   } catch (e: any) { console.log('[r2] arranque falhou:', e?.message); }
   // cofre GitHub (sem cartão): repõe users/subs/pagamentos se o disco acordou
   // vazio; só depois o seed semeia canais se continuar vazio.

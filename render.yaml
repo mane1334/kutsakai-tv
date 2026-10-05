@@ -16,6 +16,12 @@ services:
         value: production
       - key: SQLITE_PATH
         value: /tmp/data.db
+      - key: TURSO_DATABASE_URL
+        value: libsql://kutsakai-tv-mane1334.aws-us-east-2.turso.io
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: TURSO_SYNC_INTERVAL
+        value: 60
       - key: ALLOWED_ORIGINS
         # trocar pelos teus sub-domínios reais depois do Pages no ar
         value: https://tv.kutsakai.dpdns.org,https://kutsakai-tv.pages.dev
