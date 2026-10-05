@@ -23,6 +23,9 @@ RUN npm install -g tsx
 
 ENV NODE_ENV=production
 ENV PORT=3001
+# Caixa free tem 512MB: limitar o heap do Node para o container não levar
+# OOM-kill em picos (relay de vídeo + sync Turso). tsx já come bastante.
+ENV NODE_OPTIONS=--max-old-space-size=400
 # No Render Free não há disco persistente — fica efémero (/tmp).
 # Numa VM/Fly com volume, define SQLITE_PATH=/data/data.db
 ENV SQLITE_PATH=/tmp/data.db
