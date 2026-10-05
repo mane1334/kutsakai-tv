@@ -589,16 +589,35 @@ app.get('/v1/channels/:id/epg', (req, res) => {
   const rows = epgLookup(c.name);
   res.json({ channel: c.name, now: rows[0] || null, next: rows.slice(1, 6) });
 });
-// guia em lote para o catálogo: 1 pedido para os N visíveis (max 60)
+// guia em lote para o catálogo: 1 pedido para os N visíveis (max 60).
+// EM LOTE (2 queries): a versão anterior fazia 1 lookup + até 4 LIKE
+// full-scan POR canal (~5s de event loop bloqueado a cada mudança de
+// filtro) e os segmentos do relay morriam à fome -> vídeo congelava.
 app.get('/v1/epg/guide', (req, res) => {
   const ids = String((req.query as any).ids || '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 60);
   if (!ids.length) return res.json([]);
+  const chans: any[] = db.prepare(
+    `SELECT id,name FROM channels WHERE id IN (${ids.map(() => '?').join(',')})`,
+  ).all(...ids);
+  const chanKeys = chans.map((c) => ({ id: c.id, keys: epgKeys(c.name) }));
+  const allKeys = [...new Set(chanKeys.flatMap((c) => c.keys))];
+  if (!allKeys.length) return res.json([]);
+  const progs: any[] = db.prepare(
+    `SELECT channel_name,title,start,stop,description FROM epg_programs WHERE stop > datetime('now','-30 minutes') AND (${allKeys.map(() => `channel_name LIKE ?`).join(' OR ')}) ORDER BY channel_name, start LIMIT 2000`,
+  ).all(...allKeys.map((k) => `%${k}%`));
+  const byName = new Map<string, any[]>();
+  for (const p of progs) {
+    const arr = byName.get(p.channel_name) || [];
+    if (arr.length < 6) arr.push(p);
+    byName.set(p.channel_name, arr);
+  }
   const out: any[] = [];
-  for (const id of ids) {
-    const c: any = db.prepare('SELECT id,name FROM channels WHERE id=?').get(id);
-    if (!c) continue;
-    const rows = epgLookup(c.name);
-    if (rows.length) out.push({ channelId: id, now: rows[0], next: rows[1] || null });
+  for (const { id, keys } of chanKeys) {
+    for (const k of keys) {
+      const kl = k.toLowerCase();
+      const hit = [...byName.entries()].find(([name]) => String(name).toLowerCase().includes(kl));
+      if (hit && hit[1].length) { out.push({ channelId: id, now: hit[1][0], next: hit[1][1] || null }); break; }
+    }
   }
   res.json(out);
 });
