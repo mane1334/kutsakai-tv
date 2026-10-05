@@ -42,10 +42,14 @@ function getDb(): Db {
 }
 
 async function main(): Promise<void> {
+  const raw = process.argv.slice(2);
   const args: Record<string, string | boolean> = {};
-  for (const a of process.argv.slice(2)) {
-    const m = /^--([^=]+)(=(.*))?$/.exec(a);
-    if (m) args[m[1]] = m[3] === undefined ? true : m[3];
+  for (let i = 0; i < raw.length; i++) {
+    const m = /^--([^=]+)(=(.*))?$/.exec(raw[i]);
+    if (!m) continue;
+    if (m[3] !== undefined) args[m[1]] = m[3];
+    else if (i + 1 < raw.length && !raw[i + 1].startsWith('--')) args[m[1]] = raw[++i];
+    else args[m[1]] = true;
   }
   const LIMIT = Math.max(1, parseInt(String(args.limit || '200')));
   const CONC = Math.max(1, Math.min(20, parseInt(String(args.concurrency || '8'))));
