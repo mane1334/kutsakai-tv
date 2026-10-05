@@ -57,6 +57,11 @@ export default function TV() {
   // hls.js ou de fonte que deixou de emitir vídeo.
   const [audioOnly, setAudioOnly] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
+  // Fallback de relay (ref, não estado): fontes https diretas sem cabeçalhos
+  // CORS morrem no browser. À 1ª falha fatal de rede, o handler liga
+  // relayRef.current.on e faz retry via relay da API (?url=), que busca do
+  // lado do servidor sem CORS. O relay valida host==host do canal.
+  const relayRef = useRef<{ id: string | null; on: boolean }>({ id: null, on: false });
   const [q, setQ] = useState('');
   const [gate, setGate] = useState<string | null>(null);
   const [paid, setPaid] = useState(false);
@@ -174,6 +179,14 @@ export default function TV() {
     let networkRetries = 0;
     let mediaFailures = 0;
     let audioOnlyTimer: any = null;
+    if (relayRef.current.id !== current?.id) relayRef.current = { id: current?.id || null, on: false };
+    const directUrl = playableStreamUrl(current.stream_url);
+    const isRelayUrl = directUrl.includes('/stream?url=');
+    // Nota: PREMIUM https direto não traz token `st` no stream_url; o fallback
+    // de relay nesses casos devolve 403 e cai no erro normal. FREE funciona.
+    const streamUrl = relayRef.current.on && !isRelayUrl
+      ? `${API}/channels/${encodeURIComponent(current.id)}/stream?url=${encodeURIComponent(current.stream_url)}`
+      : directUrl;
     const armAudioOnlyCheck = (ms: number) => {
       clearTimeout(audioOnlyTimer);
       audioOnlyTimer = setTimeout(() => {
@@ -185,16 +198,20 @@ export default function TV() {
         } catch { /* noop */ }
       }, ms);
     };
-    const streamUrl = playableStreamUrl(current.stream_url);
     const isHls = (() => {
       try { return new URL(streamUrl).pathname.toLowerCase().endsWith('.m3u8'); }
       catch { return streamUrl.toLowerCase().split(/[?#]/)[0].endsWith('.m3u8'); }
     })();
     const onError = () => {
-      if (!disposed) {
-        setStreamLoading(false);
-        setStreamError('O sinal não respondeu. Tenta novamente ou escolhe outro canal.');
+      if (disposed) return;
+      // Mesmo fallback para playback nativo (Safari/TV sem hls.js)
+      if (!relayRef.current.on && !isRelayUrl && current) {
+        relayRef.current.on = true;
+        setRetryNonce((n) => n + 1);
+        return;
       }
+      setStreamLoading(false);
+      setStreamError('O sinal não respondeu. Tenta novamente ou escolhe outro canal.');
     };
     const onLoaded = () => { if (!disposed) setStreamLoading(false); };
     const onPlay = () => { setPlaying(true); armAudioOnlyCheck(5000); };
@@ -243,6 +260,11 @@ export default function TV() {
               if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
                 networkRetries += 1;
                 hls.startLoad();
+              }
+              else if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR && !relayRef.current.on && !isRelayUrl) {
+                // Direto falhou (CORS/rede) -> tenta via relay e recomeça o efeito
+                relayRef.current.on = true;
+                setRetryNonce((n) => n + 1);
               }
               else if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR && mediaFailures < 1) {
                 mediaFailures += 1;
