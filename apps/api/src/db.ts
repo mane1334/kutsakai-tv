@@ -13,7 +13,7 @@ const TURSO_URL =
   process.env.TURSO_DATABASE_URL || process.env.TURSO_SYNC_URL || process.env.LIBSQL_URL || '';
 const TURSO_TOKEN =
   process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN || '';
-const SYNC_PERIOD_SEC = Math.max(10, Number(process.env.TURSO_SYNC_INTERVAL || 60));
+const SYNC_PERIOD_SEC = Math.max(60, Number(process.env.TURSO_SYNC_INTERVAL || 300));
 
 export const isTurso = () => !!(TURSO_URL && TURSO_TOKEN);
 

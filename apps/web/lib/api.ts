@@ -11,7 +11,7 @@ export const setToken = (t: string) => {
 
 export async function tryRefresh(): Promise<string | null> {
   try {
-    const r = await fetch(`${API}/auth/refresh`, { method: 'POST', credentials: 'include' }).then((x) => x.json());
+    const r = await fetchRetry(`${API}/auth/refresh`, { method: 'POST', credentials: 'include' }, 2, 2500).then((x) => x.json());
     if (r?.accessToken) {
       setToken(r.accessToken);
       window.dispatchEvent(new CustomEvent('kutsakai:token', { detail: r.accessToken }));
@@ -29,17 +29,37 @@ export function tokenExpiring(t: string, skewSec = 60): boolean {
   } catch { return true; }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** fetch com retry em falha de rede ou 502/503/504 (deploys, restarts e
+ *  cold starts no Render Free derrubam a API 1-3 min; sem retry a página
+ *  nasce partida e o browser queixa-se de CORS por cima). */
+export async function fetchRetry(url: string, opts: RequestInit = {}, retries = 2, delayMs = 2500): Promise<Response> {
+  let lastErr: any = null;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(url, opts);
+      if (![502, 503, 504].includes(res.status) || i === retries) return res;
+    } catch (e) {
+      lastErr = e;
+      if (i === retries) throw e;
+    }
+    await sleep(delayMs * (i + 1));
+  }
+  throw lastErr || new Error('fetch failed');
+}
+
 /** fetch com Bearer + refresh automático 1x em 401. Devolve Response. */
 export async function authFetch(url: string, opts: RequestInit = {}, retry = true): Promise<Response> {
   const t = getToken();
-  const res = await fetch(url, {
+  const res = await fetchRetry(url, {
     ...opts,
     headers: { ...(opts.headers || {}), ...(t ? { Authorization: `Bearer ${t}` } : {}) },
   });
   if (res.status !== 401 || !retry) return res;
   const nt = await tryRefresh();
   if (!nt) return res;
-  return fetch(url, {
+  return fetchRetry(url, {
     ...opts,
     headers: { ...(opts.headers || {}), Authorization: `Bearer ${nt}` },
   });
@@ -48,10 +68,10 @@ export async function authFetch(url: string, opts: RequestInit = {}, retry = tru
 /** fetch JSON que aceita anónimo e logado; faz refresh 1x se houver token. */
 export async function apiGet(path: string, token?: string): Promise<any> {
   const t = token ?? getToken();
-  let res = await fetch(`${API}${path}`, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
+  let res = await fetchRetry(`${API}${path}`, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
   if (res.status === 401 && t) {
     const nt = await tryRefresh();
-    if (nt) res = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${nt}` } });
+    if (nt) res = await fetchRetry(`${API}${path}`, { headers: { Authorization: `Bearer ${nt}` } });
   }
   return res.json().catch(() => null);
 }
