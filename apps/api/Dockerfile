@@ -1,5 +1,9 @@
 FROM node:24-slim
 
+# libsql/Turso (TLS) precisa de CAs do sistema — a imagem slim não traz
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # manifests primeiro (cache) — inclui TODOS os workspaces ou o npm ci falha

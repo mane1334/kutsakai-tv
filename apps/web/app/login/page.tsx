@@ -47,6 +47,8 @@ export default function Login() {
         body: JSON.stringify(mode === 'register' ? { name, email, password, country } : { email, password }),
       });
       const d = await res.json();
+      // achado 3: e-mail já registado devolve 200 genérico sem token
+      if (res.ok && d.alreadyExists) { setMode('login'); setError('essa conta já existe — faz login'); return; }
       if (!res.ok || !d.accessToken) { setError(d.message || 'falhou — verifica os dados'); return; }
       await afterAuth(d.accessToken, mode === 'register');
     } catch { setError('API indisponível — a porta 3001 está a correr?'); }
@@ -78,7 +80,7 @@ export default function Login() {
             </>
           )}
           <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="email" required className="dl-input" />
-          <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder="password" required minLength={4} className="dl-input" />
+          <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder={mode === 'register' ? 'password (mín. 8 caracteres)' : 'password'} required minLength={8} className="dl-input" />
           {error && <span style={{ fontSize: 13, color: '#e06c6c' }}>{error}</span>}
           <button type="submit" disabled={busy} className="btn btn-primary" style={{ justifyContent: 'center' }}>
             {busy ? '…' : mode === 'login' ? 'Entrar' : 'Criar conta'}

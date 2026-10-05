@@ -19,7 +19,16 @@ import { Readable } from 'node:stream';
 dotenv.config({ path: path.join(process.cwd(), '.env') });
 
 const app = express();
+app.disable('x-powered-by'); // achado 7: não anunciar stack no cabeçalho
 app.set('trust proxy', 1);
+// achado 5: cabeçalhos de segurança na API (JSON — sem risco de quebrar UI)
+app.use((_req, res, next) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+  next();
+});
 app.use(cookieParser());
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',').map((s) => s.trim()).filter(Boolean);
 // sufixos extra (ex. previews do Pages: 29ec2579.kutsakai-tv.pages.dev) — só os nossos
@@ -34,9 +43,61 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json({ limit: '50mb' }));
+// JSON malformado -> 400 JSON (o handler defeito do body-parser cospe HTML
+// com stack trace e paths do servidor)
+app.use((err: any, _req: any, res: any, next: any) => {
+  if (err?.type === 'entity.parse.failed' || (err instanceof SyntaxError && 'body' in err)) {
+    return res.status(400).json({ statusCode: 400, message: 'invalid json' });
+  }
+  next(err);
+});
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'dev-refresh-change-me';
+
+// --- achado 2: rate limiting em memória (1 instância no Render Free) ---
+// Janela deslizante: key -> timestamps. Ultrapassou -> 429 + Retry-After.
+const _rl = new Map<string, number[]>();
+function rateLimit(max: number, windowMs: number, keyFn: (req: any) => string) {
+  return (req: any, res: any, next: any) => {
+    const key = keyFn(req);
+    const now = Date.now();
+    const hits = (_rl.get(key) || []).filter((t) => now - t < windowMs);
+    if (hits.length >= max) {
+      res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
+      return res.status(429).json({ statusCode: 429, message: 'too many attempts, try later' });
+    }
+    hits.push(now);
+    _rl.set(key, hits);
+    if (_rl.size > 5000) for (const [k, v] of _rl) { if (!v.length || now - v[v.length - 1] > 3600000) _rl.delete(k); }
+    next();
+  };
+}
+const ipOf = (req: any) => String(req.ip || req.socket?.remoteAddress || 'unknown');
+const loginLimit = rateLimit(10, 15 * 60 * 1000, (req) =>
+  `login:${ipOf(req)}:${String(req.body?.email || '').trim().toLowerCase()}`);
+const registerLimit = rateLimit(20, 60 * 60 * 1000, (req) => `register:${ipOf(req)}`);
+const refreshLimit = rateLimit(60, 15 * 60 * 1000, (req) => `refresh:${ipOf(req)}`);
+
+// --- achado 1: política de senha (register + troca) ---
+const COMMON_PASSWORDS = new Set(['123456', '12345678', '123456789', 'password', 'password1', 'qwerty', 'abc123', '111111', '123123', 'admin123', 'kutsakai', 'mocambique', 'moçambique', 'televisao', '1234567890', '00000000', '987654321']);
+function passwordError(pw: unknown): string | null {
+  const s = String(pw || '');
+  if (s.length < 8) return 'password too short (min 8 characters)';
+  if (COMMON_PASSWORDS.has(s.toLowerCase())) return 'password too common, choose another';
+  return null;
+}
+
+// --- achado 6: refresh/logout usam cookie -> exigir Origin legítima quando
+// o browser a envia (fetch cross-site manda sempre Origin; nativo/curl sem
+// Origin continua a passar para não partir a app Android/Capacitor) ---
+function enforceOrigin(req: any, res: any, next: any) {
+  const origin = String(req.headers.origin || '');
+  if (!origin) return next();
+  if (allowedOrigins.includes(origin)) return next();
+  if (allowedSuffixes.some((suf) => origin.endsWith(suf))) return next();
+  return res.status(403).json({ statusCode: 403, message: 'bad origin' });
+}
 
 function signAccess(userId: string) {
   return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: '15m' });
@@ -121,11 +182,16 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 app.get('/v1/health', (_req, res) => res.json({ ok: true }));
 
 // --- auth ---
-app.post('/v1/auth/register', async (req, res) => {
+app.post('/v1/auth/register', registerLimit, async (req, res) => {
   const { name, email, password, country, language } = req.body;
   if (!name || !email || !password) return res.status(400).json({ statusCode: 400, message: 'name,email,password required' });
+  const weak = passwordError(password);
+  if (weak) return res.status(400).json({ statusCode: 400, message: weak });
   const exists = db.prepare('SELECT id FROM users WHERE email=?').get(email);
-  if (exists) return res.status(409).json({ statusCode: 409, message: 'email in use' });
+  // achado 3: sem oráculo por status code — duplicado devolve 200 genérico
+  // sem token (o cliente mostra "já tens conta, faz login"). Combinado com o
+  // rate limit acima, a enumeração em massa deixa de ser viável.
+  if (exists) return res.json({ ok: true, alreadyExists: true, message: 'email already registered — sign in instead' });
   const id = randomUUID();
   const hash = await bcrypt.hash(password, 10);
   db.prepare('INSERT INTO users (id,name,email,password_hash,country,language) VALUES (?,?,?,?,?,?)')
@@ -140,7 +206,7 @@ app.post('/v1/auth/register', async (req, res) => {
   res.json({ accessToken: signAccess(id), user: { id, name, email } });
 });
 
-app.post('/v1/auth/login', async (req, res) => {
+app.post('/v1/auth/login', loginLimit, async (req, res) => {
   const { email, password } = req.body;
   const u: any = db.prepare('SELECT * FROM users WHERE email=?').get(email);
   if (!u || !(await bcrypt.compare(password, (u as any).password_hash)))
@@ -152,7 +218,7 @@ app.post('/v1/auth/login', async (req, res) => {
   res.json({ accessToken: signAccess(u.id), user: { id: u.id, name: u.name, email: u.email } });
 });
 
-app.post('/v1/auth/refresh', (req, res) => {
+app.post('/v1/auth/refresh', refreshLimit, enforceOrigin, (req, res) => {
   const token = req.cookies?.refresh_token || req.body?.refreshToken;
   if (!token) return res.status(401).json({ statusCode: 401, message: 'no refresh' });
   try {
@@ -168,7 +234,7 @@ app.post('/v1/auth/refresh', (req, res) => {
   } catch { res.status(401).json({ statusCode: 401, message: 'invalid refresh' }); }
 });
 
-app.post('/v1/auth/logout', (req, res) => {
+app.post('/v1/auth/logout', enforceOrigin, (req, res) => {
   const token = req.cookies?.refresh_token;
   if (token) db.prepare('DELETE FROM refresh_tokens WHERE token=?').run(token);
   res.clearCookie('refresh_token', { path: '/' });
@@ -196,8 +262,8 @@ app.put('/v1/me', auth, async (req: any, res) => {
 });
 app.post('/v1/me/password', auth, async (req: any, res) => {
   const { currentPassword, newPassword } = req.body || {};
-  if (!newPassword || String(newPassword).length < 4)
-    return res.status(400).json({ statusCode: 400, message: 'newPassword too short (min 4)' });
+  const weak = passwordError(newPassword);
+  if (weak) return res.status(400).json({ statusCode: 400, message: weak });
   const u: any = db.prepare('SELECT * FROM users WHERE id=?').get(req.userId);
   if (!u || !(await bcrypt.compare(String(currentPassword || ''), u.password_hash)))
     return res.status(401).json({ statusCode: 401, message: 'current password invalid' });
@@ -827,6 +893,9 @@ app.post('/v1/admin/channels/:id/verify', auth, async (req: any, res) => {
   db.prepare(`UPDATE channels SET status=?, reliability_score=?, last_checked=datetime('now') WHERE id=?`).run(r.status, rel, c.id);
   res.json({ status: r.status, latencyMs: r.latencyMs || null, provedBySegment: !!r.provedBySegment, error: r.error || null, reliability: Math.round(rel), videoCodec });
 });
+
+// achado 7: 404 JSON padronizado (sem "Cannot GET" do Express a expor rotas)
+app.use((_req, res) => res.status(404).json({ statusCode: 404, message: 'not found' }));
 
 const PORT = Number(process.env.PORT || 3001);
 app.listen(PORT, '0.0.0.0', () => {

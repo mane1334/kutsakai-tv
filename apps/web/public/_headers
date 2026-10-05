@@ -1,0 +1,11 @@
+# Cloudflare Pages — cabeçalhos de segurança (achado 5).
+# O CSP fica em Report-Only: o Next.js emite scripts inline e um CSP
+# restritivo sem nonces partia a app. Endurecer para enforcing com nonces
+# é o passo seguinte (ver relatório, achado 4).
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Content-Security-Policy-Report-Only: default-src 'self' https: data: blob:; img-src 'self' https: data: blob:; media-src 'self' https: blob:; connect-src 'self' https: wss: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; font-src 'self' https: data:; frame-ancestors 'self'; object-src 'none'
