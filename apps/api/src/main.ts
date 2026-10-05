@@ -19,6 +19,14 @@ dotenv.config({ path: path.join(process.cwd(), '.env') });
 const app = express();
 app.disable('x-powered-by'); // achado 7: não anunciar stack no cabeçalho
 app.set('trust proxy', 1);
+// Diagnóstico de quedas: logar em vez de morrer em silêncio. uncaughtException
+// reinicia limpo (o Render levanta em ~15s); sem isto, o processo podia ficar
+// meio-morto com a porta aberta até ao healthcheck falhar.
+process.on('unhandledRejection', (e: any) => console.error('[fatal] unhandledRejection:', e?.message || e));
+process.on('uncaughtException', (e: any) => {
+  console.error('[fatal] uncaughtException:', e?.message || e);
+  setTimeout(() => process.exit(1), 500);
+});
 // achado 5: cabeçalhos de segurança na API (JSON — sem risco de quebrar UI)
 app.use((_req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
@@ -404,7 +412,12 @@ app.get('/v1/channels/:id/stream', async (req: any, res) => {
       res.status(upstream.status);
       // Se o cliente desligar (zap/troca de canal), destrói o pipe para não
       // deixar bytes pendurados a consumir a instância.
+      // Erros do pipe TÊM de ter listener: sem isto, uma fonte que cai a meio
+      // do segmento lança 'error' sem handler -> uncaughtException -> o Node
+      // morre e o Render reinicia (era o "cai tudo" com 2 aparelhos em relay).
       const out = Readable.fromWeb(upstream.body as any);
+      out.on('error', () => { try { res.destroy(); } catch { /* noop */ } });
+      res.on('error', () => { /* cliente foi embora */ });
       req.on('close', () => { try { out.destroy(); } catch { /* noop */ } });
       out.pipe(res);
     }
