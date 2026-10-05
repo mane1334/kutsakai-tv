@@ -131,11 +131,12 @@ export function seedPlans() {
   // amostra PREMIUM para testar o gate (só onde ainda é FREE)
   db.exec(`UPDATE channels SET access_level='PREMIUM' WHERE id IN (SELECT id FROM channels WHERE status='online' AND categories LIKE '%sport%' LIMIT 8)`);
   db.exec(`UPDATE channels SET access_level='PREMIUM' WHERE id IN (SELECT id FROM channels WHERE status='online' AND categories LIKE '%movi%' AND (access_level IS NULL OR access_level='FREE') LIMIT 8)`);
-  // atribui os PREMIUM aos 3 planos pagos (ponto de partida; admin reorganiza no painel)
-  const paid: any[] = db.prepare(`SELECT id FROM plans WHERE duration_days > 0`).all();
-  const prem: any[] = db.prepare(`SELECT id FROM channels WHERE access_level='PREMIUM'`).all();
-  const link = db.prepare('INSERT OR IGNORE INTO plan_channels (plan_id,channel_id) VALUES (?,?)');
-  for (const p of paid) for (const c of prem) link.run(p.id, c.id);
+  // atribui os PREMIUM aos planos pagos NUMA só ida à DB (na réplica Turso
+  // cada escrita é um round-trip à cloud: o loop N×M anterior bloqueava o
+  // arranque minutos e o Render matava o deploy por falta de porta aberta).
+  db.exec(`INSERT OR IGNORE INTO plan_channels (plan_id,channel_id)
+    SELECT p.id, c.id FROM plans p, channels c
+    WHERE p.duration_days > 0 AND c.access_level='PREMIUM'`);
 }
 
 export function getPlan(idOrCode: string): any {

@@ -10,8 +10,6 @@ import { checkStream, probeCodecs } from '../../../packages/stream-monitor/index
 import { autoSeedIfEmpty } from './autoseed.js';
 import { startR2Backups, r2UploadDb, r2Configured } from './persist-r2.js';
 
-seedPlans();
-
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import path from 'node:path';
@@ -861,10 +859,10 @@ app.post('/v1/admin/channels/access-bulk', auth, (req: any, res) => {
   if (!['FREE', 'PREMIUM'].includes(level)) return res.status(400).json({ statusCode: 400, message: 'use FREE or PREMIUM' });
   const r = db.prepare(`UPDATE channels SET access_level=?`).run(level);
   if (level === 'PREMIUM') {
-    const paid: any[] = db.prepare(`SELECT id FROM plans WHERE duration_days > 0`).all();
-    const prem: any[] = db.prepare(`SELECT id FROM channels WHERE access_level='PREMIUM'`).all();
-    const link = db.prepare('INSERT OR IGNORE INTO plan_channels (plan_id,channel_id) VALUES (?,?)');
-    for (const p of paid) for (const c of prem) link.run(p.id, c.id);
+    // bulk NUMA só ida (ver seedPlans: loop N×M matava a réplica Turso)
+    db.exec(`INSERT OR IGNORE INTO plan_channels (plan_id,channel_id)
+      SELECT p.id, c.id FROM plans p, channels c
+      WHERE p.duration_days > 0 AND c.access_level='PREMIUM'`);
   } else {
     db.prepare('DELETE FROM plan_channels').run();
   }
@@ -900,6 +898,10 @@ app.use((_req, res) => res.status(404).json({ statusCode: 404, message: 'not fou
 const PORT = Number(process.env.PORT || 3001);
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API on :${PORT}`);
+  // seed de planos DEPOIS do bind (na réplica Turso cada escrita é um
+  // round-trip à cloud; antes do listen o Render matava o deploy por
+  // "no open ports detected").
+  try { seedPlans(); } catch (e: any) { console.log('[plans] seed falhou:', e?.message); }
   // Turso = persistência real: sem snapshots R2, sem checkpoint WAL manual.
   // Modo local: snapshots R2 (persistência no Render Free) + seed se a DB estiver vazia
   try {
