@@ -51,7 +51,7 @@ export default function Login() {
       if (res.ok && d.alreadyExists) { setMode('login'); setError('essa conta já existe — faz login'); return; }
       if (!res.ok || !d.accessToken) { setError(d.message || 'falhou — verifica os dados'); return; }
       await afterAuth(d.accessToken, mode === 'register');
-    } catch { setError('API indisponível — a porta 3001 está a correr?'); }
+    } catch { setError('API indisponível — verifica a ligação e tenta de novo'); }
     finally { setBusy(false); }
   };
 
