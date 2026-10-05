@@ -71,8 +71,15 @@ if (isTurso()) {
     console.warn('[db] sync inicial falhou (segue com réplica local):', e?.message || e);
   }
   // pull periódico para apanhar escritas de outras instâncias (pagamentos aprovados, etc.)
+  // NOTA: db.sync() é BLOQUEANTE (congela o event loop). Se demorar segundos,
+  // todos os pedidos penduram — daí o warn para diagnosticar stalls.
   const iv = setInterval(() => {
-    try { _db.sync(); } catch (e: any) {
+    const t0 = Date.now();
+    try {
+      _db.sync();
+      const ms = Date.now() - t0;
+      if (ms > 2000) console.warn(`[db] sync lento: ${ms}ms (event loop congelado este tempo)`);
+    } catch (e: any) {
       console.warn('[db] sync periódico falhou:', e?.message || e);
     }
   }, SYNC_PERIOD_SEC * 1000);
