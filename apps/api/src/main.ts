@@ -120,6 +120,10 @@ function auth(req: any, res: any, next: any) {
   if (!h?.startsWith('Bearer ')) return res.status(401).json({ statusCode: 401, message: 'unauthorized' });
   try {
     (req as any).userId = (jwt.verify(h.slice(7), JWT_SECRET) as any).sub;
+    // presença para o painel "ativos": só escreve se passou +5min (escrita barata)
+    try {
+      db.prepare(`UPDATE users SET last_seen=datetime('now') WHERE id=? AND (last_seen IS NULL OR last_seen < datetime('now','-5 minutes'))`).run((req as any).userId);
+    } catch { /* presença é best-effort */ }
     next();
   } catch { return res.status(401).json({ statusCode: 401, message: 'token expired' }); }
 }
@@ -352,6 +356,26 @@ app.get('/v1/channels', (req, res) => {
     return pub;
   };
   res.json({ total: rows.length, page: p, data: rows.slice((p - 1) * l, p * l).map(map) });
+});
+
+// carrosséis por categoria: top N canais online de cada categoria (1 query).
+// Respeita a mesma visibilidade da lista (PREMIUM com locked sem sub paga).
+app.get('/v1/channels/by-category', (req, res) => {
+  const per = Math.min(12, Math.max(1, parseInt(String((req.query as any).limit || '8'))));
+  const viewer = paidViewer(req);
+  const rows: any[] = db.prepare(`SELECT * FROM channels WHERE status='online' ORDER BY reliability_score DESC LIMIT 4000`).all();
+  const cats = ['news', 'sports', 'movies', 'series', 'music', 'kids', 'documentary', 'entertainment', 'culture', 'religious', 'general'];
+  const out: Record<string, any[]> = {};
+  for (const cat of cats) {
+    const list = rows.filter((c) => j(c.categories).map((x: string) => String(x).toLowerCase()).includes(cat)).slice(0, per);
+    if (!list.length) continue;
+    out[cat] = list.map((c) => {
+      const pub: any = publicChannel(req, c);
+      if (!viewer && (c.access_level || 'FREE').toUpperCase() === 'PREMIUM') { pub.stream_url = null; pub.locked = true; }
+      return pub;
+    });
+  }
+  res.json(out);
 });
 
 // Relay HTTPS controlado: só permite a URL que pertence ao mesmo host da fonte
@@ -761,7 +785,12 @@ app.get('/v1/admin/stats', auth, (req: any, res) => {
   const offline = (db.prepare("SELECT COUNT(*) n FROM channels WHERE status='offline'").get() as any).n;
   const watchH = (db.prepare('SELECT COALESCE(SUM(duration_sec),0) s FROM watch_history').get() as any).s;
   const epg = (db.prepare('SELECT COUNT(*) n FROM epg_programs').get() as any).n;
-  res.json({ users, streams: chans, online, offline, watchSeconds: watchH, epg });
+  const activeSubs = (db.prepare(`SELECT COUNT(*) n FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.status='ACTIVE' AND (s.expires_at IS NULL OR s.expires_at > datetime('now')) AND (p.duration_days || 0) > 0`).get() as any).n;
+  const pendingPay = (db.prepare(`SELECT COUNT(*) n FROM payments WHERE status IN ('PENDING','PROCESSING')`).get() as any).n;
+  const revenueMonth = (db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE status='COMPLETED' AND created_at >= date('now','start of month')`).get() as any).s;
+  const expiring7d = (db.prepare(`SELECT COUNT(*) n FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.status='ACTIVE' AND s.expires_at > datetime('now') AND s.expires_at <= datetime('now','+7 days') AND (p.duration_days || 0) > 0`).get() as any).n;
+  const activeUsers = (db.prepare(`SELECT COUNT(*) n FROM users WHERE last_seen >= datetime('now','-1 day')`).get() as any).n;
+  res.json({ users, streams: chans, online, offline, watchSeconds: watchH, epg, activeSubs, pendingPay, revenueMonth, expiring7d, activeUsers });
 });
 app.get('/v1/admin/channels', auth, (req: any, res) => {
   const me: any = db.prepare('SELECT is_admin FROM users WHERE id=?').get((req as any).userId);
@@ -795,8 +824,66 @@ app.post('/v1/admin/payments/:id/reject', auth, (req: any, res) => {
 });
 app.get('/v1/admin/users', auth, (req: any, res) => {
   if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
-  const rows = db.prepare('SELECT id,name,email,country,created_at FROM users ORDER BY created_at DESC LIMIT 200').all();
-  res.json(rows);
+  const { q, active, sub, page = '1', limit = '50' } = req.query as any;
+  let rows: any[] = db.prepare(`
+    SELECT u.id,u.name,u.email,u.country,u.created_at,u.last_seen,u.is_admin,
+      s.id sub_id, s.status sub_status, s.started_at sub_started, s.expires_at sub_expires,
+      p.code plan_code, p.name plan_name, p.duration_days
+    FROM users u LEFT JOIN subscriptions s ON s.user_id=u.id AND s.status='ACTIVE'
+      AND (s.expires_at IS NULL OR s.expires_at > datetime('now'))
+    LEFT JOIN plans p ON p.id=s.plan_id
+    ORDER BY u.created_at DESC LIMIT 2000`).all();
+  const daysLeft = (r: any) => r.sub_expires ? Math.max(0, Math.ceil((new Date(r.sub_expires).getTime() - Date.now()) / 86400000)) : null;
+  let out = rows.map((r) => ({
+    ...r,
+    is_paid: !!r.sub_id && (r.duration_days || 0) > 0,
+    days_left: r.sub_id ? daysLeft(r) : null,
+    seen_mins_ago: r.last_seen ? Math.max(0, Math.round((Date.now() - new Date(r.last_seen).getTime()) / 60000)) : null,
+  }));
+  if (active === '1') out = out.filter((r) => r.last_seen && new Date(r.last_seen).getTime() > Date.now() - 24 * 3600 * 1000);
+  if (sub === 'paid') out = out.filter((r) => r.is_paid);
+  else if (sub === 'free') out = out.filter((r) => !r.is_paid);
+  else if (sub === 'expiring') out = out.filter((r) => r.is_paid && (r.days_left ?? 999) <= 7);
+  if (q) out = out.filter((r) => `${r.name} ${r.email}`.toLowerCase().includes(String(q).toLowerCase()));
+  const pg = Math.max(1, parseInt(String(page))), l = Math.min(100, parseInt(String(limit)));
+  res.json({ total: out.length, page: pg, data: out.slice((pg - 1) * l, pg * l) });
+});
+
+// perfil completo do cliente: subscrição + dias, histórico, favoritos, pagamentos
+app.get('/v1/admin/users/:id', auth, (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  const u: any = db.prepare('SELECT id,name,email,country,language,created_at,last_seen,is_admin FROM users WHERE id=?').get(req.params.id);
+  if (!u) return res.status(404).json({ statusCode: 404, message: 'not found' });
+  const subs: any[] = db.prepare(`SELECT s.*, p.code plan_code, p.name plan_name, p.duration_days FROM subscriptions s LEFT JOIN plans p ON p.id=s.plan_id WHERE s.user_id=? ORDER BY s.started_at DESC LIMIT 10`).all(u.id);
+  const now = Date.now();
+  const subscriptions = subs.map((s) => ({
+    ...s,
+    days_left: s.expires_at ? Math.max(0, Math.ceil((new Date(s.expires_at).getTime() - now) / 86400000)) : null,
+    is_current: s.status === 'ACTIVE' && (!s.expires_at || new Date(s.expires_at).getTime() > now),
+  }));
+  const history = db.prepare(`SELECT h.*, c.name channel_name, c.logo FROM watch_history h LEFT JOIN channels c ON c.id=h.channel_id WHERE h.user_id=? ORDER BY h.started_at DESC LIMIT 15`).all(u.id);
+  const favorites = db.prepare(`SELECT c.id,c.name,c.logo,c.country FROM favorites f JOIN channels c ON c.id=f.channel_id WHERE f.user_id=? ORDER BY f.created_at DESC LIMIT 20`).all(u.id);
+  const payments = db.prepare(`SELECT p.*, pl.name plan_name FROM payments p LEFT JOIN plans pl ON pl.id=p.plan_id WHERE p.user_id=? ORDER BY p.created_at DESC LIMIT 20`).all(u.id);
+  const prefs: any = db.prepare('SELECT languages,countries,categories FROM user_preferences WHERE user_id=?').get(u.id);
+  const watchTotal = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(duration_sec),0) s FROM watch_history WHERE user_id=?`).get(u.id) as any;
+  res.json({ user: u, subscriptions, history, favorites, payments, prefs, watchCount: watchTotal.n, watchSeconds: watchTotal.s });
+});
+
+// estender / cancelar subscrição de um cliente
+app.post('/v1/admin/subscriptions/:id/extend', auth, (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  const days = Math.max(1, Math.min(365, parseInt(req.body?.days) || 30));
+  const s: any = db.prepare('SELECT * FROM subscriptions WHERE id=?').get(req.params.id);
+  if (!s) return res.status(404).json({ statusCode: 404, message: 'not found' });
+  const base = s.expires_at && new Date(s.expires_at).getTime() > Date.now() ? new Date(s.expires_at).getTime() : Date.now();
+  const exp = new Date(base + days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  db.prepare(`UPDATE subscriptions SET expires_at=?, status='ACTIVE' WHERE id=?`).run(exp, s.id);
+  res.json(db.prepare('SELECT * FROM subscriptions WHERE id=?').get(s.id));
+});
+app.post('/v1/admin/subscriptions/:id/cancel', auth, (req: any, res) => {
+  if (!isAdmin(req.userId)) return res.status(403).json({ statusCode: 403, message: 'admin only' });
+  db.prepare(`UPDATE subscriptions SET status='CANCELLED' WHERE id=?`).run(req.params.id);
+  res.json({ ok: true });
 });
 
 // --- admin: backup / restore ---

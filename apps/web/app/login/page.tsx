@@ -13,9 +13,11 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [country, setCountry] = useState('MZ');
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reduced, setReduced] = useState(false);
+  const COUNTRIES = [['MZ', 'Moçambique'], ['AO', 'Angola'], ['PT', 'Portugal'], ['BR', 'Brasil'], ['ZA', 'África do Sul'], ['CV', 'Cabo Verde'], ['GW', 'Guiné-Bissau'], ['ST', 'São Tomé e Príncipe'], ['TL', 'Timor-Leste'], ['OT', 'Outro']];
 
   useEffect(() => {
     setReduced(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
@@ -64,36 +66,41 @@ export default function Login() {
 
       <div className="card featured" style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: 420, padding: 36 }}>
         <Link href="/" style={{ fontSize: 13, color: 'var(--text-tertiary)', textDecoration: 'none' }}>← voltar</Link>
-        <span className="section-label" style={{ marginTop: 16 }}>[{mode === 'login' ? 'Entrar' : 'Criar conta'}]</span>
-        <h1 style={{ color: 'var(--text-primary)', fontSize: 32, margin: '0 0 4px', letterSpacing: 'var(--tracking-tight)' }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          {(['login', 'register'] as const).map((m) => (
+            <button key={m} type="button" onClick={() => { setMode(m); setError(''); }} className={mode === m ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'} style={{ flex: 1, justifyContent: 'center' }}>
+              {m === 'login' ? 'Entrar' : 'Criar conta'}
+            </button>
+          ))}
+        </div>
+        <h1 style={{ color: 'var(--text-primary)', fontSize: 32, margin: '16px 0 4px', letterSpacing: 'var(--tracking-tight)' }}>
           {mode === 'login' ? 'Boa noite.' : 'Bem-vindo.'}
         </h1>
         <p style={{ fontSize: 14, marginTop: 0 }}>
-          {mode === 'login' ? 'Os teus canais continuam onde os deixaste.' : '5000+ canais. A seguir escolhes línguas e géneros.'}
+          {mode === 'login' ? 'Os teus canais continuam onde os deixaste.' : 'Conta grátis em 30 segundos. A seguir escolhes línguas e géneros.'}
         </p>
 
         <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 20 }}>
           {mode === 'register' && (
             <>
-              <input value={name} onChange={e => setName(e.target.value)} placeholder="nome" required className="dl-input" />
-              <input value={country} onChange={e => setCountry(e.target.value)} placeholder="país (MZ, PT, BR…)" className="dl-input" />
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="nome" required autoComplete="name" className="dl-input" />
+              <select value={country} onChange={e => setCountry(e.target.value)} className="dl-input" style={{ background: 'var(--bg-surface)' }}>
+                {COUNTRIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
             </>
           )}
-          <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="email" required className="dl-input" />
-          <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder={mode === 'register' ? 'password (mín. 8 caracteres)' : 'password'} required minLength={8} className="dl-input" />
+          <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="email" required autoComplete="email" className="dl-input" />
+          <div style={{ position: 'relative' }}>
+            <input value={password} onChange={e => setPassword(e.target.value)} type={showPw ? 'text' : 'password'} placeholder={mode === 'register' ? 'password (mín. 8 caracteres)' : 'password'} required minLength={8} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} className="dl-input" style={{ paddingRight: 64 }} />
+            <button type="button" onClick={() => setShowPw(!showPw)} style={{ position: 'absolute', right: 8, top: 8, background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12 }}>
+              {showPw ? 'esconder' : 'mostrar'}
+            </button>
+          </div>
           {error && <span style={{ fontSize: 13, color: '#e06c6c' }}>{error}</span>}
           <button type="submit" disabled={busy} className="btn btn-primary" style={{ justifyContent: 'center' }}>
-            {busy ? '…' : mode === 'login' ? 'Entrar' : 'Criar conta'}
+            {busy ? '…' : mode === 'login' ? 'Entrar' : 'Criar conta grátis'}
           </button>
         </form>
-
-        <div style={{ marginTop: 20, fontSize: 13, textAlign: 'center' }}>
-          {mode === 'login' ? (
-            <>Sem conta? <button onClick={() => setMode('register')} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 13 }}>Criar conta</button></>
-          ) : (
-            <>Já tens conta? <button onClick={() => setMode('login')} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 13 }}>Entrar</button></>
-          )}
-        </div>
       </div>
     </div>
   );

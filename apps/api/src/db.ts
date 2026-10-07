@@ -173,6 +173,7 @@ for (const sql of [
   `ALTER TABLE subscriptions ADD COLUMN auto_renew INTEGER DEFAULT 0`,
   `ALTER TABLE subscriptions ADD COLUMN payment_provider TEXT`,
   `ALTER TABLE channels ADD COLUMN access_level TEXT DEFAULT 'FREE'`,
+  `ALTER TABLE users ADD COLUMN last_seen TEXT`,
 ]) {
   try { db.exec(sql); } catch { /* coluna já existe */ }
 }

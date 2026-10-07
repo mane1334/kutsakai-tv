@@ -14,6 +14,10 @@ export default function Admin() {
   const [chAccess, setChAccess] = useState('');
   const [chPage, setChPage] = useState(1);
   const [users, setUsers] = useState<any[]>([]);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [uQ, setUQ] = useState('');
+  const [uFilter, setUFilter] = useState(''); // '' | active | paid | free | expiring
+  const [uPage, setUPage] = useState(1);
   const [denied, setDenied] = useState(false);
   const [token, setToken] = useState('');
   const [payments, setPayments] = useState<any[]>([]);
@@ -135,10 +139,24 @@ export default function Admin() {
       if (d.statusCode === 403) { setDenied(true); return; }
       setStats(d);
     }).catch(() => {});
-    authFetch(`${API}/admin/users`).then((r) => r.json()).then((d) => setUsers(Array.isArray(d) ? d : [])).catch(() => {});
     loadPayments();
     loadPlans();
   }, [token]);
+
+  const loadUsers = async (page = uPage) => {
+    const p = new URLSearchParams({ limit: '30', page: String(page) });
+    if (uQ) p.set('q', uQ);
+    if (uFilter) p.set(uFilter === 'active' ? 'active' : 'sub', uFilter === 'active' ? '1' : uFilter);
+    const r = await authFetch(`${API}/admin/users?${p}`);
+    const d = await r.json().catch(() => ({}));
+    setUsers(d.data || []); setUsersTotal(d.total || 0);
+  };
+
+  useEffect(() => {
+    if (!token || denied) return;
+    const t = setTimeout(() => loadUsers(1), 300);
+    return () => clearTimeout(t);
+  }, [token, denied, uQ, uFilter]);
 
   useEffect(() => {
     if (!token || denied) return;
@@ -170,10 +188,13 @@ export default function Admin() {
 
   const cards: [string, string][] = stats ? [
     ['UTILIZADORES', stats.users],
-    ['STREAMS', stats.streams],
+    ['ATIVOS 24H', stats.activeUsers],
+    ['SUBS PAGAS', stats.activeSubs],
+    ['PENDENTES', stats.pendingPay],
+    ['RECEITA MÊS', `${stats.revenueMonth ?? 0} MT`],
+    ['A EXPIRAR 7D', stats.expiring7d],
     ['ONLINE', stats.online],
     ['OFFLINE', stats.offline],
-    ['EPG', stats.epg],
   ] : [];
 
   const sel: React.CSSProperties = { padding: '8px 10px', background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border-medium)', borderRadius: 8, fontSize: 12 };
@@ -218,15 +239,16 @@ export default function Admin() {
         </section>
 
         <section className="card reveal visible" style={{ padding: 24, marginBottom: 16 }}>
-          <span className="section-label">[Pagamentos — aprovar]</span>
-          {payments.filter((p) => p.status === 'PENDING' || p.status === 'PROCESSING').map((p: any) => (
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+            <span className="section-label" style={{ margin: 0 }}>[Pagamentos — a aprovar: {payments.filter((p) => p.status === 'PENDING' || p.status === 'PROCESSING').length}]</span>
+            <Link href="/admin/payments" style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 13, whiteSpace: 'nowrap' }}>Página completa →</Link>
+          </div>
+          {payments.filter((p) => p.status === 'PENDING' || p.status === 'PROCESSING').slice(0, 3).map((p: any) => (
             <div key={p.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '12px 0', borderTop: '1px solid var(--border-subtle)' }}>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 14 }}>{p.user_name || p.email} — {p.plan_name} · <span className="tnum">{p.amount} {p.currency}</span></div>
                 <div className="tnum" style={{ fontSize: 12, color: 'var(--accent)' }}>ID: {p.provider_transaction_id}</div>
-                <div className="tnum" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{p.provider.toUpperCase()} // {p.status} // {p.created_at?.slice(0, 16)}</div>
               </div>
-              {(() => { try { const mt = JSON.parse(p.metadata || '{}'); return mt.receipt ? <a href={mt.receipt} target="_blank" rel="noreferrer"><img src={mt.receipt} alt="comprovativo" style={{ width: 90, height: 90, objectFit: 'cover', borderRadius: 10, border: '1px solid var(--border-accent)' }} /></a> : null; } catch { return null; } })()}
               <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
                 <button onClick={() => decide(p.id, true)} className="btn btn-primary btn-sm">Aprovar</button>
                 <button onClick={() => decide(p.id, false)} className="btn btn-secondary btn-sm">Rejeitar</button>
@@ -235,16 +257,6 @@ export default function Admin() {
           ))}
           {payments.filter((p) => p.status === 'PENDING' || p.status === 'PROCESSING').length === 0 && (
             <p style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>Nenhum pagamento pendente.</p>
-          )}
-          {payments.filter((p) => p.status !== 'PENDING').slice(0, 10).length > 0 && (
-            <>
-              <div className="arch-meta" style={{ marginTop: 12 }}>ÚLTIMOS DECIDIDOS</div>
-              <ul style={{ paddingLeft: 18, margin: 0, fontSize: 12 }}>
-                {payments.filter((p) => p.status !== 'PENDING').slice(0, 10).map((p: any) => (
-                  <li key={p.id}>{p.plan_name} · {p.amount} {p.currency} · {p.status} · {p.user_name}</li>
-                ))}
-              </ul>
-            </>
           )}
         </section>
 
@@ -339,11 +351,40 @@ export default function Admin() {
           </div>
         </section>
 
-        <section className="card reveal visible" style={{ padding: 24 }}>
-          <span className="section-label">[Utilizadores — {users.length}]</span>
-          <ul style={{ paddingLeft: 18, margin: 0 }}>
-            {users.map((u: any) => <li key={u.id}>{u.name} — {u.email} ({u.country || '—'})</li>)}
-          </ul>
+        <section className="card reveal visible" style={{ padding: 24, overflowX: 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+            <span className="section-label" style={{ margin: 0 }}>[Utilizadores — {usersTotal}]</span>
+            <Link href="/admin/payments" style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 13, whiteSpace: 'nowrap' }}>Pagamentos →</Link>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            <input value={uQ} onChange={(e) => setUQ(e.target.value)} placeholder="nome ou email…" className="dl-input" style={{ flex: '2 1 180px' }} />
+            <select value={uFilter} onChange={(e) => setUFilter(e.target.value)} style={sel}>
+              <option value="">Todos</option>
+              <option value="active">Ativos 24h</option>
+              <option value="paid">Com sub paga</option>
+              <option value="expiring">A expirar 7d</option>
+              <option value="free">Sem sub paga</option>
+            </select>
+          </div>
+          <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse', marginTop: 8 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)' }}>
+                <th style={{ padding: '8px 12px' }}>CLIENTE</th><th style={{ padding: '8px 12px' }}>VISTO</th><th style={{ padding: '8px 12px' }}>PLANO</th><th style={{ padding: '8px 12px' }}>FALTAM</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u: any) => (
+                <tr key={u.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <td style={{ padding: '8px 12px', color: 'var(--text-primary)', fontWeight: 600 }}>{u.name}<br /><span style={{ fontWeight: 400, fontSize: 11, color: 'var(--text-tertiary)' }}>{u.email}</span></td>
+                  <td style={{ padding: '8px 12px' }}>{u.seen_mins_ago === null ? <span className="chip chip-mut">NUNCA</span> : u.seen_mins_ago < 60 ? <span className="chip chip-pos">HÁ {u.seen_mins_ago} MIN</span> : u.seen_mins_ago < 1440 ? <span className="chip chip-pos">HÁ {Math.round(u.seen_mins_ago / 60)} H</span> : <span className="chip chip-mut">HÁ {Math.round(u.seen_mins_ago / 1440)} D</span>}</td>
+                  <td style={{ padding: '8px 12px' }}>{u.is_paid ? <span className="chip chip-pos">{(u.plan_name || u.plan_code || 'PAGO').toUpperCase()}</span> : <span className="chip chip-mut">FREE</span>}</td>
+                  <td className="tnum" style={{ padding: '8px 12px', color: u.is_paid && (u.days_left ?? 99) <= 3 ? '#e06c6c' : 'inherit' }}>{u.is_paid ? `${u.days_left}d` : '—'}</td>
+                  <td style={{ padding: '8px 12px' }}><Link href={`/admin/users/${u.id}`} className="btn btn-secondary btn-sm">Perfil</Link></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {users.length === 0 && <p style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>Sem utilizadores para este filtro.</p>}
         </section>
       </main>
 

@@ -31,6 +31,8 @@ export default function Catalog() {
   const [paid, setPaid] = useState(false);
   const [lockedCount, setLockedCount] = useState(0);
   const [tokenReady, setTokenReady] = useState(false);
+  const [rails, setRails] = useState<Record<string, any[]>>({});
+  const RAIL_LABELS: Record<string, string> = { news: 'Notícias', sports: 'Desporto', movies: 'Filmes', series: 'Séries', music: 'Música', kids: 'Infantil', documentary: 'Documentários', entertainment: 'Entretenimento', culture: 'Cultura', religious: 'Religioso', general: 'Geral' };
 
   useEffect(() => {
     // token de 15 min: renova antes da lista, senão conta paga parece anónima
@@ -83,7 +85,16 @@ export default function Catalog() {
       .then(r => r.json()).then(d => setRecs(Array.isArray(d) ? d : [])).catch(() => {});
   }, [token]);
 
-  const open = (id: string) => router.push(`/tv?channel=${id}`);
+  const open = (id: string, locked?: boolean) => router.push(locked ? '/plans' : `/tv?channel=${id}`);
+
+  // carrosséis por categoria quando não há pesquisa/filtros (1 pedido)
+  const browsing = !q && !lang && !cat && !country && !region && page === 1;
+  useEffect(() => {
+    if (!tokenReady || !browsing) return;
+    apiGet('/channels/by-category?limit=8', token).then((d) => {
+      if (d && typeof d === 'object' && !Array.isArray(d)) setRails(d);
+    }).catch(() => {});
+  }, [tokenReady, browsing, token]);
 
   const toggleFav = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -150,7 +161,7 @@ export default function Catalog() {
             <span className="section-label">[Para ti — aprende com o que vês]</span>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 12 }}>
               {recs.map((r: any) => (
-                <button key={r.channel.id} onClick={() => open(r.channel.id)} className="card featured" style={{ padding: 14, textAlign: 'left', cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
+                <button key={r.channel.id} onClick={() => open(r.channel.id, r.channel.locked)} className="card featured" style={{ padding: 14, textAlign: 'left', cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
                   <div className="arch-meta">{(r.channel.categories?.[0] || 'geral').toUpperCase()} // {Math.round((r.score || 0) * 100)} PTS</div>
                   <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{r.channel.name}</div>
                   <div style={{ fontSize: 12 }}>{r.reason}</div>
@@ -188,12 +199,53 @@ export default function Catalog() {
           </button>
         </section>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 14, marginTop: 20 }}>
-          {shown.map(c => (
-            <button key={c.id} onClick={() => open(c.id)} className="card dl-chan" style={{ position: 'relative', textAlign: 'left' }}>
-              {(c.access_level || 'FREE').toUpperCase() === 'PREMIUM' && (
+        <section style={{ marginTop: 20 }}>
+          <div className="no-scrollbar" style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+            <button onClick={() => { setCat(''); setPage(1); }} className={!cat ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}>Tudo</button>
+            {CAT_OPTS.filter(Boolean).map((c) => (
+              <button key={c} onClick={() => { setCat(cat === c ? '' : c); setPage(1); document.getElementById('catalogo-grid')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} className={cat === c ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'} style={{ whiteSpace: 'nowrap' }}>
+                {RAIL_LABELS[c] || c}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {browsing && Object.keys(rails).length > 0 ? (
+          <div style={{ marginTop: 8 }}>
+            {Object.entries(rails).map(([c, list]) => (
+              <section key={c} style={{ marginTop: 26 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 10 }}>
+                  <span className="section-label" style={{ margin: 0 }}>[{RAIL_LABELS[c] || c} — top {list.length}]</span>
+                  <button onClick={() => { setCat(c); setPage(1); }} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap' }}>Ver tudo →</button>
+                </div>
+                <div className="no-scrollbar" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
+                  {list.map((ch: any) => (
+                    <button key={ch.id} onClick={() => open(ch.id, ch.locked)} className="card dl-chan" style={{ position: 'relative', textAlign: 'left', minWidth: 168, maxWidth: 168 }}>
+                      {ch.locked && <span className="chip chip-warn" style={{ position: 'absolute', top: 8, right: 8 }}>🔒</span>}
+                      <img src={ch.logo || '/assets/icon.jpg'} loading="lazy" alt="" style={{ width: '100%', height: 56, objectFit: 'contain' }} />
+                      <div className="chan-name">{ch.name}</div>
+                      <div className="chan-meta">{(ch.country || 'int').toUpperCase()} // {ch.status.toUpperCase()}</div>
+                      {guide[ch.id]?.now ? (
+                        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-body)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          <span style={{ color: 'var(--accent)', fontWeight: 700 }}>AGORA</span> · {guide[ch.id].now.title}
+                        </div>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : null}
+
+        <div id="catalogo-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 14, marginTop: 20 }}>
+          {(browsing ? [] : shown).map(c => (
+            <button key={c.id} onClick={() => open(c.id, c.locked)} className="card dl-chan" style={{ position: 'relative', textAlign: 'left' }}>
+              {c.locked ? (
+                <span className="chip chip-warn" style={{ position: 'absolute', top: 8, right: 8 }}>🔒 PREMIUM</span>
+              ) : (c.access_level || 'FREE').toUpperCase() === 'PREMIUM' ? (
                 <span className="chip chip-warn" style={{ position: 'absolute', top: 8, right: 8 }}>PREMIUM</span>
-              )}
+              ) : null}
               {token && (
                 <span onClick={(e) => toggleFav(e, c.id)} title="favorito" style={{ position: 'absolute', top: 8, left: 8, fontSize: 16, color: favs.includes(c.id) ? 'var(--accent)' : 'var(--text-tertiary)', cursor: 'pointer' }}>
                   {favs.includes(c.id) ? '★' : '☆'}
@@ -215,10 +267,10 @@ export default function Catalog() {
             </button>
           ))}
         </div>
-        {shown.length === 0 && (
+        {!browsing && shown.length === 0 && (
           <div style={{ marginTop: 20, color: 'var(--text-tertiary)', fontSize: 14 }}>{onlyGuide ? 'Nenhum canal visível tem guia agora. Limpa o filtro 📺.' : onlyFavs ? (<>Sem favoritos neste filtro. <Link href="/favorites" style={{ color: 'var(--accent)' }}>Ver todos</Link></>) : 'Nenhum canal para esta pesquisa. Tenta limpar os filtros.'}</div>
         )}
-        {!onlyFavs && channels.length < total && (
+        {!browsing && !onlyFavs && channels.length < total && (
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: 24 }}>
             <button onClick={() => setPage(p => p + 1)} className="btn btn-secondary">
               Mostrar mais ({channels.length}/{total})
