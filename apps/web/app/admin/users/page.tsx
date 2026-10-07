@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { API, authFetch } from '../../../lib/api';
+import AdminNav from '../AdminNav';
 
 export default function AdminUsers() {
   const router = useRouter();
@@ -68,12 +69,7 @@ export default function AdminUsers() {
 
   return (
     <>
-      <nav className="nav scrolled">
-        <div className="dl-wrap" style={{ display: 'flex', alignItems: 'center', gap: 24, paddingTop: 16, paddingBottom: 16 }}>
-          <Link href="/admin" style={{ fontWeight: 800, color: 'var(--text-primary)', textDecoration: 'none' }}>← Admin</Link>
-          <span className="section-label" style={{ margin: 0 }}>[Utilizadores]</span>
-        </div>
-      </nav>
+      <AdminNav active="/admin/users" />
       <main className="dl-wrap" style={{ paddingTop: 110, paddingBottom: 48 }}>
         {sel ? (<>
           <button onClick={() => { setSel(null); router.replace('/admin/users'); }} className="btn btn-secondary btn-sm">← voltar à lista</button>

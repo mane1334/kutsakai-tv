@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { API, authFetch } from '../../../lib/api';
+import AdminNav from '../AdminNav';
 
 export default function AdminPayments() {
   const router = useRouter();
@@ -58,12 +59,7 @@ export default function AdminPayments() {
 
   return (
     <>
-      <nav className="nav scrolled">
-        <div className="dl-wrap" style={{ display: 'flex', alignItems: 'center', gap: 24, paddingTop: 16, paddingBottom: 16 }}>
-          <Link href="/admin" style={{ fontWeight: 800, color: 'var(--text-primary)', textDecoration: 'none' }}>← Admin</Link>
-          <span className="section-label" style={{ margin: 0 }}>[Pagamentos]</span>
-        </div>
-      </nav>
+      <AdminNav active="/admin/payments" />
       <main className="dl-wrap" style={{ paddingTop: 110, paddingBottom: 48 }}>
         <h1 className="display-headline" style={{ fontSize: 'var(--text-h1)' }}><span className="hl-muted">Aceitar ou</span> <span className="hl-bright">recusar.</span></h1>
         <div style={{ display: 'flex', gap: 8, marginTop: 20, flexWrap: 'wrap' }}>
