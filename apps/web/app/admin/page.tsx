@@ -205,6 +205,8 @@ export default function Admin() {
         <div className="dl-wrap" style={{ display: 'flex', alignItems: 'center', gap: 24, paddingTop: 16, paddingBottom: 16 }}>
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 10, fontWeight: 800, color: 'var(--text-primary)', textDecoration: 'none' }}><img src="/assets/icon.jpg" alt="Kutsakai TV" style={{ width: 24, height: 24, borderRadius: 6 }} />Kutsakai<span style={{ color: 'var(--accent)' }}> TV</span></Link>
           <span className="section-label" style={{ margin: 0 }}>[Admin]</span>
+          <Link href="/admin/payments" className="nav-hide-m" style={{ fontSize: 13 }}>Pagamentos</Link>
+          <Link href="/admin/users" className="nav-hide-m" style={{ fontSize: 13 }}>Clientes</Link>
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
             <Link href="/" className="btn btn-secondary btn-sm">← voltar</Link>
             <button onClick={() => logout((h) => router.push(h))} className="btn btn-secondary btn-sm">Sair</button>
@@ -354,7 +356,7 @@ export default function Admin() {
         <section className="card reveal visible" style={{ padding: 24, overflowX: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
             <span className="section-label" style={{ margin: 0 }}>[Utilizadores — {usersTotal}]</span>
-            <Link href="/admin/payments" style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 13, whiteSpace: 'nowrap' }}>Pagamentos →</Link>
+            <Link href="/admin/users" style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: 13, whiteSpace: 'nowrap' }}>Gerir clientes →</Link>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
             <input value={uQ} onChange={(e) => setUQ(e.target.value)} placeholder="nome ou email…" className="dl-input" style={{ flex: '2 1 180px' }} />
@@ -373,18 +375,19 @@ export default function Admin() {
               </tr>
             </thead>
             <tbody>
-              {users.map((u: any) => (
+              {users.slice(0, 8).map((u: any) => (
                 <tr key={u.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
                   <td style={{ padding: '8px 12px', color: 'var(--text-primary)', fontWeight: 600 }}>{u.name}<br /><span style={{ fontWeight: 400, fontSize: 11, color: 'var(--text-tertiary)' }}>{u.email}</span></td>
                   <td style={{ padding: '8px 12px' }}>{u.seen_mins_ago === null ? <span className="chip chip-mut">NUNCA</span> : u.seen_mins_ago < 60 ? <span className="chip chip-pos">HÁ {u.seen_mins_ago} MIN</span> : u.seen_mins_ago < 1440 ? <span className="chip chip-pos">HÁ {Math.round(u.seen_mins_ago / 60)} H</span> : <span className="chip chip-mut">HÁ {Math.round(u.seen_mins_ago / 1440)} D</span>}</td>
                   <td style={{ padding: '8px 12px' }}>{u.is_paid ? <span className="chip chip-pos">{(u.plan_name || u.plan_code || 'PAGO').toUpperCase()}</span> : <span className="chip chip-mut">FREE</span>}</td>
                   <td className="tnum" style={{ padding: '8px 12px', color: u.is_paid && (u.days_left ?? 99) <= 3 ? '#e06c6c' : 'inherit' }}>{u.is_paid ? `${u.days_left}d` : '—'}</td>
-                  <td style={{ padding: '8px 12px' }}><Link href={`/admin/users/${u.id}`} className="btn btn-secondary btn-sm">Perfil</Link></td>
+                  <td style={{ padding: '8px 12px' }}><Link href={`/admin/users?user=${u.id}`} className="btn btn-secondary btn-sm">Perfil</Link></td>
                 </tr>
               ))}
             </tbody>
           </table>
           {users.length === 0 && <p style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>Sem utilizadores para este filtro.</p>}
+          {usersTotal > 8 && <div style={{ marginTop: 10 }}><Link href="/admin/users" style={{ color: 'var(--accent)', fontSize: 13 }}>Ver todos os {usersTotal} →</Link></div>}
         </section>
       </main>
 
